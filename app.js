@@ -583,5 +583,6 @@ function paintServerSettings() {
 }
 
 // ---------------- boot ----------------
+window.__hbBooted = true;
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 route();

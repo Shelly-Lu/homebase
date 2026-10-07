@@ -43,6 +43,32 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <div id="bootError" class="boot-error" hidden>
+    <b>Homebase couldn't start.</b>
+    <div id="bootMsg" class="small"></div>
+    <button class="btn primary" id="bootReset" type="button">Reset app files &amp; reload</button>
+    <div class="small">Your connection settings are kept.</div>
+  </div>
+  <script>
+    // Shows startup errors on screen instead of a silent freeze.
+    (function () {
+      var errs = [];
+      function show() {
+        if (window.__hbBooted) return;
+        document.getElementById('bootMsg').textContent = errs.length ? errs.slice(-2).join(' | ') : 'The app files did not load. Check your connection.';
+        document.getElementById('bootError').hidden = false;
+      }
+      window.addEventListener('error', function (e) { errs.push((e.message || 'Error') + (e.filename ? ' (' + e.filename.split('/').pop() + ')' : '')); if (!window.__hbBooted) show(); }, true);
+      window.addEventListener('unhandledrejection', function (e) { errs.push(String(e.reason && e.reason.message || e.reason)); });
+      setTimeout(show, 6000);
+      document.getElementById('bootReset').onclick = function () {
+        var p = [];
+        if (navigator.serviceWorker) p.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+        if (window.caches) p.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+        Promise.all(p).finally(function () { location.replace(location.pathname + '?r=' + Date.now() + '#today'); });
+      };
+    })();
+  </script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

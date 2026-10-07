@@ -213,3 +213,7 @@ details.why summary { cursor: pointer; color: var(--ink-2); font-size: 14px; mar
 .cal-row:first-child { border-top: 0; }
 .cal-row input { width: 20px; height: 20px; accent-color: var(--accent); }
 .cal-tag { font-size: 11.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; margin-left: 4px; white-space: nowrap; }
+
+.boot-error { position: fixed; inset: auto 16px calc(var(--nav-h) + 24px) 16px; z-index: 50; background: var(--surface); border: 2px solid var(--warn);
+  border-radius: 16px; padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+.boot-error[hidden] { display: none; }
