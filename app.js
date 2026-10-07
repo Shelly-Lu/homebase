@@ -67,8 +67,24 @@ function md(s) {
 }
 
 // ---------------- state ----------------
+// Reads a saved value; anything missing or unreadable counts as "nothing saved".
+function loadSaved(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object') return v;
+    localStorage.removeItem(key);
+    return null;
+  } catch { localStorage.removeItem(key); return null; }
+}
+function saveToday() {
+  if (state.today && typeof state.today === 'object') localStorage.setItem('homebase.today', JSON.stringify(state.today));
+  else localStorage.removeItem('homebase.today');
+}
+
 const state = {
-  today: JSON.parse(localStorage.getItem('homebase.today') || 'null'),
+  today: loadSaved('homebase.today'),
   tasks: null, chat: null, settings: null
 };
 
@@ -94,8 +110,10 @@ $('#settingsBtn').addEventListener('click', () => (location.hash = '#settings'))
 async function renderToday() {
   paintToday();
   try {
-    state.today = await api('today');
-    localStorage.setItem('homebase.today', JSON.stringify(state.today));
+    const t = await api('today');
+    if (!t || typeof t !== 'object') throw new Error('The backend sent an empty answer. Deploy a New version of the web app and try again.');
+    state.today = t;
+    saveToday();
     if (location.hash === '' || location.hash === '#today') paintToday();
   } catch (e) { fail(e); }
 }
@@ -189,7 +207,7 @@ function bindOutfitCard() {
   const gen = async (btn, date, note) => busy(btn, async () => {
     const o = await api('outfit.generate', { date, note });
     if (date === 'today') state.today.outfit = o; else state.today.tomorrow_outfit = o;
-    localStorage.setItem('homebase.today', JSON.stringify(state.today));
+    saveToday();
     if (date === 'today') { card.innerHTML = outfitCardInner(o); bindOutfitCard(); }
     else showOutfitModal(o);
   }).catch(fail);

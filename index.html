@@ -65,6 +65,7 @@
         var p = [];
         if (navigator.serviceWorker) p.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
         if (window.caches) p.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+        try { localStorage.removeItem('homebase.today'); } catch (e) {}
         Promise.all(p).finally(function () { location.replace(location.pathname + '?r=' + Date.now() + '#today'); });
       };
     })();
