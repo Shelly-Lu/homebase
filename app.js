@@ -522,9 +522,23 @@ function paintServerSettings() {
     </div>
     <div class="card">
       <h2>Notifications</h2>
-      <div class="muted small" style="margin-bottom:10px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic (server ntfy.sh). Keep it private.</div>
-      <div class="row" style="margin-bottom:12px"><input type="text" readonly value="${esc(s.ntfy_topic)}" id="sTopic"><button class="btn small" id="sCopy">Copy</button></div>
-      <div class="two">
+      <label class="field"><span>Send notifications with</span>
+        <div class="seg" id="sChan"><button type="button" data-v="telegram">Telegram</button><button type="button" data-v="ntfy">ntfy</button></div></label>
+      <div id="sTg" class="chan-box">
+        <div class="muted small">Recommended: free and reliable. One-time setup (on a computer for step 2):</div>
+        <ol class="small steps">
+          <li>In Telegram, message <b>@BotFather</b>, send <code>/newbot</code>, pick any name, and copy the <b>token</b> it gives you.</li>
+          <li>In Apps Script → Project Settings → Script Properties, add <code>TELEGRAM_BOT_TOKEN</code> with that token.</li>
+          <li>Open your new bot in Telegram and tap <b>Start</b>.</li>
+          <li>Tap <b>Link Telegram</b> below.</li>
+        </ol>
+        <div class="row"><button class="btn small primary" id="sTgLink" type="button">Link Telegram</button><span id="sTgStatus" class="muted small grow"></span></div>
+      </div>
+      <div id="sNtfy" class="chan-box">
+        <div class="muted small" style="margin-bottom:8px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic (server ntfy.sh). Keep it private. Note: ntfy's free server can hit a shared limit with Google; Telegram doesn't.</div>
+        <div class="row"><input type="text" readonly value="${esc(s.ntfy_topic)}" id="sTopic"><button class="btn small" id="sCopy" type="button">Copy</button></div>
+      </div>
+      <div class="two" style="margin-top:12px">
         <label class="field"><span>Morning brief</span><select id="sBrief">${hourOpts(s.brief_hour, true)}</select></label>
         <label class="field"><span>Evening check-in</span><select id="sEve">${hourOpts(s.evening_hour, true)}</select></label>
       </div>
@@ -575,7 +589,32 @@ function paintServerSettings() {
     }, err => { btn.disabled = false; toast(err.message, true); }, { timeout: 15000 });
   };
   $('#sCopy').onclick = () => navigator.clipboard?.writeText($('#sTopic').value).then(() => toast('Copied.'));
-  $('#sTestN').onclick = e => busy(e.currentTarget, async () => { await api('notify.test'); toast('Sent. Check your phone.'); }).catch(fail);
+  $('#sTestN').onclick = e => busy(e.currentTarget, async () => {
+    const r = await api('notify.test');
+    toast(r.note ? r.note : `Sent via ${r.channel === 'telegram' ? 'Telegram' : 'ntfy'}. Check your phone.`);
+  }).catch(fail);
+
+  let channel = s.notify_channel === 'telegram' ? 'telegram' : 'ntfy';
+  const paintChan = () => {
+    $$('#sChan button').forEach(b => b.classList.toggle('on', b.dataset.v === channel));
+    $('#sTg').classList.toggle('hidden', channel !== 'telegram');
+    $('#sNtfy').classList.toggle('hidden', channel !== 'ntfy');
+  };
+  $$('#sChan button').forEach(b => b.onclick = () => { channel = b.dataset.v; paintChan(); });
+  paintChan();
+  $('#sChan').dataset.value = channel;
+  $$('#sChan button').forEach(b => b.addEventListener('click', () => { $('#sChan').dataset.value = channel; }));
+  const tgStatus = st => {
+    const el = $('#sTgStatus'); if (!el) return;
+    el.textContent = st.linked ? `✓ Linked${st.bot ? ' to ' + st.bot : ''}` : st.has_token ? `Token found${st.bot ? ' (' + st.bot + ')' : ''}. Tap Start in the bot, then Link.` : 'No bot token yet (step 2).';
+  };
+  api('telegram.status').then(tgStatus).catch(() => {});
+  $('#sTgLink').onclick = e => busy(e.currentTarget, async () => {
+    const r = await api('telegram.link');
+    tgStatus({ linked: true, bot: r.bot });
+    channel = 'telegram'; paintChan(); $('#sChan').dataset.value = channel;
+    toast('Linked. A test message was sent to Telegram.');
+  }).catch(fail);
   $('#sScan').onclick = e => busy(e.currentTarget, async () => {
     const list = await api('email.scan', {}, { timeoutMs: 180000 });
     toast(list.length ? `${list.length} item(s) waiting on Today.` : 'Nothing new found.');
@@ -590,7 +629,7 @@ function paintServerSettings() {
       ...(calBoxes.length ? { calendar_ids } : {}),
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
-      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value,
+      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
       about_me: $('#sAbout').value.trim(), email_watch_query: $('#sEmail').value.trim(),
       model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       app_url: location.origin + location.pathname

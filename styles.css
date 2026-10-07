@@ -217,3 +217,8 @@ details.why summary { cursor: pointer; color: var(--ink-2); font-size: 14px; mar
 .boot-error { position: fixed; inset: auto 16px calc(var(--nav-h) + 24px) 16px; z-index: 50; background: var(--surface); border: 2px solid var(--warn);
   border-radius: 16px; padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
 .boot-error[hidden] { display: none; }
+
+.chan-box { background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.steps { margin: 8px 0 12px; padding-left: 20px; color: var(--ink-2); }
+.steps li { margin: 4px 0; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--surface); padding: 1px 5px; border-radius: 6px; }
