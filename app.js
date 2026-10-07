@@ -248,7 +248,7 @@ function eventsList(events) {
     const day = e.start.slice(0, 10);
     if (day !== lastDay) { html += `<div class="event-day">${esc(rel(day) === 'today' ? 'Today' : rel(day) === 'tomorrow' ? 'Tomorrow' : niceDate(day))}</div>`; lastDay = day; }
     html += `<div class="row small" style="padding:3px 0"><span class="muted" style="width:58px;flex:none">${e.all_day ? 'all day' : time12(e.start.slice(11, 16))}</span>
-      <span class="grow">${esc(e.title)}${e.location ? ` <span class="muted">· ${esc(e.location)}</span>` : ''}</span></div>`;
+      <span class="grow">${esc(e.title)}${e.location ? ` <span class="muted">· ${esc(e.location)}</span>` : ''}${e.calendar ? ` <span class="cal-tag">${esc(e.calendar)}</span>` : ''}</span></div>`;
   });
   return html;
 }
@@ -498,6 +498,11 @@ function paintServerSettings() {
         <textarea id="sClothes" rows="3" placeholder="e.g. I run cold. Mostly jeans, sweaters, a navy rain shell and a puffer. Office is business casual.">${esc(s.clothes_notes)}</textarea></label>
     </div>
     <div class="card">
+      <h2>Calendars</h2>
+      <div class="muted small" style="margin-bottom:8px">Which calendars Homebase reads for Today, reminders and outfit advice. Shared calendars (like Family) appear here once they're in your Google Calendar.</div>
+      <div id="sCals" class="muted small">Loading calendars…</div>
+    </div>
+    <div class="card">
       <h2>Notifications</h2>
       <div class="muted small" style="margin-bottom:10px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic (server ntfy.sh). Keep it private.</div>
       <div class="row" style="margin-bottom:12px"><input type="text" readonly value="${esc(s.ntfy_topic)}" id="sTopic"><button class="btn small" id="sCopy">Copy</button></div>
@@ -535,6 +540,13 @@ function paintServerSettings() {
       '<br>Your exact free limits are listed in Google AI Studio.';
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
 
+  api('calendars.list').then(cals => {
+    const el = $('#sCals'); if (!el) return;
+    el.classList.remove('muted', 'small');
+    el.innerHTML = cals.map(c => `<label class="row cal-row"><input type="checkbox" value="${esc(c.id)}" ${c.selected ? 'checked' : ''}>
+      <span class="grow">${esc(c.name)}${c.primary ? ' <span class="muted small">(yours)</span>' : ''}${!c.owned && !c.primary ? ' <span class="muted small">shared</span>' : ''}</span></label>`).join('');
+  }).catch(e => { $('#sCals') && ($('#sCals').textContent = 'Could not load calendars: ' + e.message); });
+
   $('#sLoc').onclick = e => {
     const btn = e.currentTarget;
     if (!navigator.geolocation) return toast('Location not available.', true);
@@ -553,7 +565,11 @@ function paintServerSettings() {
   }).catch(fail);
   $('#sClear').onclick = e => { if (confirm('Clear chat history?')) busy(e.currentTarget, async () => { await api('chat.clear'); state.chat = []; toast('Cleared.'); }).catch(fail); };
   $('#sSave').onclick = e => busy(e.currentTarget, async () => {
+    const calBoxes = $$('#sCals input[type=checkbox]');
+    const calendar_ids = calBoxes.filter(b => b.checked).map(b => b.value);
+    if (calBoxes.length && !calendar_ids.length) throw new Error('Pick at least one calendar.');
     state.settings = await api('settings.save', {
+      ...(calBoxes.length ? { calendar_ids } : {}),
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
       brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value,
