@@ -1,7 +1,7 @@
 // Service worker: caches the app shell so Homebase opens instantly and works offline (read-only).
-const VERSION = 'homebase-v2';
+const VERSION = 'homebase-v3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './manifest.webmanifest',
-  './icons/icon-192.png', './icons/icon-512.png'];
+  './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
