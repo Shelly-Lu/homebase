@@ -564,22 +564,35 @@ async function decodeImage(fileOrBlob) {
 }
 function canvasBlob(c, type, q) { return new Promise(res => c.toBlob(b => res(b), type, q)); }
 
-// JPEG, longest side `max`, white behind transparency. Returns {url, data, mime, canvas}.
-async function shrinkImage(file, max = 420) {
+// Photos are stored at this size (longest side). Bigger = sharper but slower to load.
+const PHOTO_MAX = 800;
+
+// Longest side `max`. Normal photos become a JPEG on white. A PNG/WebP that already has a transparent
+// background (a cutout made elsewhere) stays a trimmed transparent PNG. Returns {url, data, mime, canvas, cutout}.
+async function shrinkImage(file, max = PHOTO_MAX) {
   const bmp = await decodeImage(file);
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
   bmp.close?.();
-  const url = c.toDataURL('image/jpeg', 0.78);
+  if (/^image\/(png|webp)$/.test(file.type || '')) {
+    const px = i => ctx.getImageData(i[0], i[1], 1, 1).data[3];
+    const corners = [[0, 0], [c.width - 1, 0], [0, c.height - 1], [c.width - 1, c.height - 1]];
+    if (corners.some(i => px(i) < 200)) {
+      try { return { ...trimToPng(c, max), cutout: true }; } catch { /* empty image: fall through to a normal photo */ }
+    }
+  }
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.globalCompositeOperation = 'source-over';
+  const url = c.toDataURL('image/jpeg', 0.86);
   return { url, data: url.split(',')[1], mime: 'image/jpeg', canvas: c };
 }
 
 // Crops transparent margins, fits into `max`, returns a PNG {url, data, mime}.
-function trimToPng(src, max = 420) {
+function trimToPng(src, max = PHOTO_MAX) {
   const w = src.width, h = src.height;
   const px = src.getContext('2d').getImageData(0, 0, w, h).data;
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
@@ -594,7 +607,7 @@ function trimToPng(src, max = 420) {
   out.width = Math.max(1, Math.round(cw * k)); out.height = Math.max(1, Math.round(ch * k));
   out.getContext('2d').drawImage(src, x0, y0, cw, ch, 0, 0, out.width, out.height);
   const url = out.toDataURL('image/png');
-  return { url, data: url.split(',')[1], mime: 'image/png' };
+  return { url, data: url.split(',')[1], mime: 'image/png', canvas: out };
 }
 
 // Plain-background cutout: flood-fills from the photo's edges over pixels close to the border colour.
@@ -637,10 +650,11 @@ function loadBgLib() {
 
 // mode: keep | ai | flat. `src` comes from shrinkImage(). Returns {url, data, mime} to store.
 async function applyCutout(src, mode, onStatus = () => {}) {
+  if (src.cutout) return { url: src.url, data: src.data, mime: src.mime };   // already a transparent cutout
   if (mode === 'ai') {
     onStatus('Loading the cutout tool… (the first time downloads about 80 MB)');
     const remove = await loadBgLib();
-    const small = await shrinkImage(await canvasBlob(src.canvas, 'image/jpeg', 0.85), 512);
+    const small = await shrinkImage(await canvasBlob(src.canvas, 'image/jpeg', 0.9), 1024);
     onStatus('Cutting out the clothing…');
     const blob = await remove(await canvasBlob(small.canvas, 'image/jpeg', 0.9), {
       output: { format: 'image/png' },
@@ -662,6 +676,22 @@ async function applyCutout(src, mode, onStatus = () => {}) {
     return trimToPng(c);
   }
   return { url: src.url, data: src.data, mime: src.mime };
+}
+
+// Turns a photo (data URL) by 90/180/270 degrees clockwise. Keeps transparency for PNG cutouts.
+async function rotateImage(url, deg) {
+  const img = await loadImg(url);
+  const q = ((deg % 360) + 360) % 360;
+  const swap = q === 90 || q === 270;
+  const c = document.createElement('canvas');
+  c.width = swap ? img.height : img.width; c.height = swap ? img.width : img.height;
+  const ctx = c.getContext('2d');
+  const png = url.startsWith('data:image/png');
+  if (!png) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
+  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(q * Math.PI / 180);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  const out = png ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.86);
+  return { url: out, data: out.split(',')[1], mime: png ? 'image/png' : 'image/jpeg', canvas: c };
 }
 
 // A stored photo (jpeg/png data URL) as a JPEG on white, for sending to AI.
@@ -899,6 +929,7 @@ function openBulkAdd() {
   openModal(`<h3>Add many photos</h3>
     <label class="field"><span>Photos (one clothing item per photo)</span><input type="file" id="bFiles" accept="image/*" multiple></label>
     ${ps.length > 1 ? `<label class="field"><span>Belongs to</span><select id="bWho">${ps.map(p => `<option value="${esc(p.id)}" ${p.id === currentPerson() ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
+    <label class="field"><span>Turn every photo</span><select id="bRot"><option value="0">Leave as taken</option><option value="90">Turn right ↻</option><option value="270">Turn left ↺</option><option value="180">Upside down</option></select></label>
     <label class="field"><span>Background</span>${cutSelectHtml('bCut', lsGet('homebase.cut', 'keep'))}</label>
     <label class="field check-field row-field"><input type="checkbox" id="bDesc" checked><span>Describe each with AI afterwards (one at a time, paced to stay within the free limit)</span></label>
     <div class="muted small" id="bInfo" style="margin-bottom:10px">Tip: lay each item flat on a plain, contrasting surface. You can keep using the app while this runs.</div>
@@ -907,14 +938,14 @@ function openBulkAdd() {
     const files = [...($('#bFiles').files || [])];
     if (!files.length) return toast('Choose at least one photo.', true);
     const owner = $('#bWho')?.value || currentPerson();
-    const mode = $('#bCut').value, describe = $('#bDesc').checked;
+    const mode = $('#bCut').value, describe = $('#bDesc').checked, rot = Number($('#bRot').value) || 0;
     lsSet('homebase.cut', mode);
     closeModal();
-    runBulk(files, owner, mode, describe);
+    runBulk(files, owner, mode, describe, rot);
   };
 }
 
-async function runBulk(files, owner, mode, describe) {
+async function runBulk(files, owner, mode, describe, rot = 0) {
   const added = [];
   await runJob('Adding photos', files.length * (describe ? 2 : 1), async (job, repaint) => {
     if (!state.wardrobe) state.wardrobe = await api('wardrobe.list');
@@ -923,7 +954,8 @@ async function runBulk(files, owner, mode, describe) {
       if (job.cancel) break;
       job.label = `photo ${i + 1} of ${files.length}`; repaint();
       try {
-        const src = await shrinkImage(files[i]);
+        let src = await shrinkImage(files[i]);
+        if (rot) src = await rotateImage(src.url, rot);
         let photo;
         try { photo = await applyCutout(src, mode, t => { job.label = `photo ${i + 1} of ${files.length}: ${t}`; repaint(); }); }
         catch (e) { cutFailures++; photo = { data: src.data, mime: src.mime }; if (mode === 'ai' && cutFailures === 1) job.notes.push(e.message); }
@@ -931,7 +963,7 @@ async function runBulk(files, owner, mode, describe) {
         const res = await api('wardrobe.save', { name: 'New item', category: 'other', owner, needs_details: true, photo: { data: photo.data, mime: photo.mime } });
         state.wardrobe = res;
         const item = res.items.find(x => !before.has(x.id));
-        if (item) added.push({ id: item.id, jpeg: src.data });
+        if (item) added.push({ id: item.id, jpeg: src.mime === 'image/jpeg' ? src.data : await urlToJpegData(src.url) });
       } catch (e) { job.notes.push(`Photo ${i + 1}: ${e.message}`); }
       job.done++; repaint();
       if (location.hash === '#wardrobe') paintWardrobe();
@@ -965,6 +997,7 @@ function openItemEditor(item) {
       <div class="grow">
         <input type="file" id="iFile" accept="image/*" hidden>
         <button type="button" class="btn small" id="iPick">${it.photo_id ? 'Change photo' : 'Add photo'}</button>
+        <button type="button" class="btn small ghost${it.photo_id ? '' : ' hidden'}" id="iRotL" aria-label="Turn left">↺</button><button type="button" class="btn small ghost${it.photo_id ? '' : ' hidden'}" id="iRotR" aria-label="Turn right">↻</button>
         <button type="button" class="btn small ghost hidden" id="iAi">Fill in with AI</button>
         <div class="muted small" id="iAiMsg" style="margin-top:6px">${isNew ? 'Add a photo and AI fills in the details.' : ''}</div>
       </div>
@@ -1028,7 +1061,7 @@ function openItemEditor(item) {
     try {
       src = await shrinkImage(file);
       photo = src; showPhoto(photo);
-      $('#iAi').classList.remove('hidden'); $('#iCutF').classList.remove('hidden');
+      $('#iAi').classList.remove('hidden'); $('#iRotL').classList.remove('hidden'); $('#iRotR').classList.remove('hidden'); $('#iCutF').classList.remove('hidden');
       const cutting = $('#iCut').value !== 'keep';
       const jobs = [];
       if (cutting) jobs.push(runCut());
@@ -1037,6 +1070,16 @@ function openItemEditor(item) {
       await Promise.all(jobs);
     } catch (err) { fail(err); }
   };
+  const turn = async deg => {
+    const cur = photo ? photo.url : photoMem.get(it.photo_id);
+    if (!cur) return toast('The photo is still loading. Try again in a moment.', true);
+    try {
+      photo = await rotateImage(cur, deg); showPhoto(photo);
+      if (src) src = await rotateImage(src.url, deg);
+    } catch (err) { fail(err); }
+  };
+  $('#iRotL').onclick = () => turn(270);
+  $('#iRotR').onclick = () => turn(90);
   $('#iCut').onchange = () => { if (src) runCut(); };
   $('#iAi').onclick = e => runAi(e.currentTarget);
   $('#iLimit').oninput = () => { limitTouched = true; };
@@ -1091,39 +1134,102 @@ function itemStatusHtml(it) {
 
 // --- collage: the chosen photos laid out on one picture (drawn on the phone, no AI) ---
 const CAT_ORDER = ['outerwear', 'top', 'dress', 'bottom', 'shoes', 'accessory', 'other'];
-function collageLayout(n, W, H, pad = 36) {
-  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
-  const rows = Math.ceil(n / cols);
-  const cw = (W - pad * (cols + 1)) / cols, ch = (H - pad * (rows + 1)) / rows;
-  const cells = [];
-  for (let i = 0; i < n; i++) {
-    const r = Math.floor(i / cols), inRow = Math.min(cols, n - r * cols), c = i % cols;
-    const rowW = inRow * cw + (inRow - 1) * pad;
-    const x0 = (W - rowW) / 2;
-    cells.push({ x: x0 + c * (cw + pad), y: pad + r * (ch + pad), w: cw, h: ch });
+
+// Where each piece goes on the picture: tops/outerwear/dresses on the left, bottoms on the right,
+// shoes and accessories in a row underneath. Pure function, so it can be tested without a canvas.
+function collageSlots(items, W, H) {
+  const pad = 70, gap = 44;
+  const group = c => c === 'bottom' ? 'low' : (c === 'shoes' || c === 'accessory' || c === 'other') ? 'small' : 'up';
+  const up = items.filter(i => group(i.category) === 'up'), low = items.filter(i => group(i.category) === 'low'), small = items.filter(i => group(i.category) === 'small');
+  const slots = [];
+  const grid = (list, x, y, w, h) => {
+    const n = list.length; if (!n) return;
+    const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3, rows = Math.ceil(n / cols);
+    const cw = (w - gap * (cols - 1)) / cols, ch = (h - gap * (rows - 1)) / rows;
+    list.forEach((item, i) => {
+      const r = Math.floor(i / cols), inRow = Math.min(cols, n - r * cols), c = i % cols;
+      const x0 = x + (w - (inRow * cw + (inRow - 1) * gap)) / 2;
+      slots.push({ item, x: x0 + c * (cw + gap), y: y + r * (ch + gap), w: cw, h: ch });
+    });
+  };
+  const column = (list, x, y, w, h) => {
+    if (list.length > 3) return grid(list, x, y, w, h);
+    const n = list.length, ch = (h - gap * (n - 1)) / n;
+    list.forEach((item, i) => slots.push({ item, x, y: y + i * (ch + gap), w, h: ch }));
+  };
+  let main = [up, low].filter(l => l.length);
+  const hasMain = main.length > 0, hasSmall = small.length > 0;
+  const inner = H - 2 * pad;
+  const smallH = hasSmall ? (hasMain ? Math.round(inner * 0.25) : inner) : 0;
+  const mainH = hasMain ? inner - (hasSmall ? smallH + gap : 0) : 0;
+  if (up.length && low.length) {
+    const cw = (W - 2 * pad - gap) / 2;
+    column(up, pad, pad, cw, mainH); column(low, pad + cw + gap, pad, cw, mainH);
+  } else if (hasMain) grid(main[0], pad, pad, W - 2 * pad, mainH);
+  if (hasSmall) {
+    if (!hasMain || small.length > 4) grid(small, pad, pad + (hasMain ? mainH + gap : 0), W - 2 * pad, smallH);
+    else { const cw = (W - 2 * pad - gap * (small.length - 1)) / small.length; small.forEach((item, i) => slots.push({ item, x: pad + i * (cw + gap), y: pad + mainH + gap, w: cw, h: smallH })); }
   }
-  return cells;
+  return slots;
 }
+
+function roundedRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+// A photo as something to draw: plain-background photos are cut out on the fly so the clothes
+// sit on the picture like a flat lay; if that isn't possible the photo is drawn as a neat card.
+async function collagePiece(url) {
+  const img = await loadImg(url);
+  if (!url.startsWith('data:image/png')) {
+    try {
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
+      const res = flatCutout(cx.getImageData(0, 0, c.width, c.height));
+      if (res) {
+        cx.clearRect(0, 0, c.width, c.height);
+        cx.putImageData(new ImageData(res.data, res.width, res.height), 0, 0);
+        const t = trimToPng(c, 1000);
+        return { draw: t.canvas, w: t.canvas.width, h: t.canvas.height, card: false };
+      }
+    } catch { /* draw the photo as a card */ }
+    return { draw: img, w: img.width, h: img.height, card: true };
+  }
+  return { draw: img, w: img.width, h: img.height, card: false };
+}
+
 async function renderCollage(items) {
-  const W = 900, H = 1100;
+  const W = 1080, H = 1350;
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#f5f1ea'; ctx.fillRect(0, 0, W, H);
-  const cells = collageLayout(items.length, W, H);
-  for (let i = 0; i < items.length; i++) {
-    const cell = cells[i], it = items[i], u = photoMem.get(it.photo_id);
-    if (u) {
-      try {
-        const img = await loadImg(u);
-        const k = Math.min(cell.w / img.width, (cell.h - 30) / img.height);
-        const w = img.width * k, h = img.height * k;
-        ctx.drawImage(img, cell.x + (cell.w - w) / 2, cell.y + (cell.h - 30 - h) / 2, w, h);
-      } catch { /* leave blank */ }
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#f8f4ed'); bg.addColorStop(1, '#ebe3d5');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  for (const s of collageSlots(items, W, H)) {
+    const u = photoMem.get(s.item.photo_id);
+    let piece = null;
+    if (u) { try { piece = await collagePiece(u); } catch { /* placeholder */ } }
+    ctx.save();
+    ctx.shadowColor = 'rgba(70, 52, 30, 0.30)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 12;
+    if (!piece) {
+      const w = s.w * 0.8, h = s.h * 0.8, x = s.x + (s.w - w) / 2, y = s.y + (s.h - h) / 2;
+      ctx.fillStyle = '#e6dccb'; roundedRect(ctx, x, y, w, h, 24); ctx.fill();
+      ctx.shadowColor = 'transparent'; ctx.fillStyle = '#7a6f60'; ctx.font = '30px system-ui, sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText((s.item.name || '').slice(0, 24), x + w / 2, y + h / 2);
     } else {
-      ctx.fillStyle = '#e3dbcd'; ctx.fillRect(cell.x, cell.y, cell.w, cell.h - 30);
+      const inset = piece.card ? 22 : 8;
+      const k = Math.min((s.w - 2 * inset) / piece.w, (s.h - 2 * inset) / piece.h, 1.3);
+      const w = piece.w * k, h = piece.h * k, x = s.x + (s.w - w) / 2, y = s.y + (s.h - h) / 2;
+      if (piece.card) {
+        ctx.fillStyle = '#fff'; roundedRect(ctx, x - 14, y - 14, w + 28, h + 28, 26); ctx.fill();
+        ctx.shadowColor = 'transparent';
+        ctx.save(); roundedRect(ctx, x, y, w, h, 16); ctx.clip(); ctx.drawImage(piece.draw, x, y, w, h); ctx.restore();
+      } else ctx.drawImage(piece.draw, x, y, w, h);
     }
-    ctx.fillStyle = '#6b645a'; ctx.font = '22px system-ui, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText((it.name || '').slice(0, 28), cell.x + cell.w / 2, cell.y + cell.h - 6);
+    ctx.restore();
   }
   return c.toDataURL('image/png');
 }
