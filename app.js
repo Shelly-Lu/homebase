@@ -414,10 +414,20 @@ async function renderChat() {
   view.innerHTML = '<div class="chat" id="chatList"></div>';
   const composer = document.createElement('form');
   composer.className = 'composer';
-  composer.innerHTML = `<input type="text" id="chatInput" placeholder="Ask or tell me anything…" autocomplete="off" enterkeyhint="send">
+  composer.innerHTML = `<textarea id="chatInput" rows="1" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
     <button class="btn primary" aria-label="Send">Send</button>`;
   document.body.appendChild(composer);
-  composer.addEventListener('submit', e => { e.preventDefault(); const v = $('#chatInput').value.trim(); if (v) { $('#chatInput').value = ''; sendChat(v); } });
+  const ta = $('#chatInput');
+  const grow = () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    const l = $('#chatList'); if (l) l.style.paddingBottom = (composer.offsetHeight + 16) + 'px';
+  };
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(hover: hover)').matches) { e.preventDefault(); composer.requestSubmit(); }
+  });
+  composer.addEventListener('submit', e => { e.preventDefault(); const v = ta.value.trim(); if (v) { ta.value = ''; grow(); sendChat(v); } });
 
   if (!state.chat) {
     paintChat(true);
@@ -495,8 +505,28 @@ async function renderSettings() {
   }
 }
 
+// Watch-list helpers: rows <-> "from:(a OR b) extra" string
+function parseWatch(q) {
+  q = String(q || '');
+  const list = [];
+  let extra = q.replace(/\bfrom:\(([^)]*)\)/gi, (_, inner) => {
+    inner.split(/\s*(?:,|\bOR\b|\s)\s*/i).map(x => x.trim()).filter(Boolean).forEach(x => list.push(x));
+    return ' ';
+  });
+  extra = extra.replace(/\s+/g, ' ').trim();
+  return { list: [...new Set(list)], extra };
+}
+function buildWatch(list, extra) {
+  const parts = [];
+  if (list.length) parts.push(`from:(${list.join(' OR ')})`);
+  if ((extra || '').trim()) parts.push(extra.trim());
+  return parts.join(' ');
+}
+
 function paintServerSettings() {
   const s = state.settings || {};
+  const watch = parseWatch(s.email_watch_query);
+  const watchList = watch.list;
   const hours = [...Array(24).keys()];
   const hourOpts = (val, allowOff) => (allowOff ? `<option value="" ${val === '' ? 'selected' : ''}>Off</option>` : '') +
     hours.map(h => `<option value="${h}" ${String(val) === String(h) ? 'selected' : ''}>${hour12(h).replace('a', ' am').replace('p', ' pm')}</option>`).join('');
@@ -548,9 +578,15 @@ function paintServerSettings() {
       <h2>Assistant</h2>
       <label class="field"><span>About your household (the AI uses this)</span>
         <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. I prefer comfortable, simple clothes.">${esc(s.about_me)}</textarea></label>
-      <label class="field"><span>Watch these emails (Gmail search; blank = off)</span>
-        <input type="text" id="sEmail" value="${esc(s.email_watch_query)}" placeholder="from:(school.org OR dentist.com OR vet.com)">
-        <span class="muted small" style="display:block;margin-top:5px">Only emails matching this are ever read, by the hourly check and by chat. Blank turns all email reading off.</span></label>
+      <div class="field"><span>Watch these emails (blank = email reading off)</span>
+        <details class="why watch" id="sWatch">
+          <summary id="sWatchSum"></summary>
+          <div id="sWatchRows" class="watch-rows"></div>
+          <div class="watch-add"><input type="text" id="sWatchNew" placeholder="name@school.org or school.org" autocapitalize="off" autocomplete="off"><button type="button" class="btn small" id="sWatchAdd">Add</button></div>
+          <details class="why" style="margin-top:8px"><summary>Advanced: extra Gmail search words</summary>
+            <input type="text" id="sWatchExtra" value="${esc(watch.extra)}" placeholder="e.g. newer_than:30d" style="margin-top:6px"></details>
+        </details>
+        <span class="muted small" style="display:block;margin-top:5px">Only emails from these senders are ever read, by the hourly check and by chat.</span></div>
       <details class="why" style="margin-bottom:12px"><summary>AI models & today's usage</summary>
         <div class="muted small" style="margin:8px 0">"auto" picks the newest free Gemini models for your key: Flash-Lite for everyday work (big free quota) and Flash for outfit advice (smarter, small quota). If one runs out, the other takes over.</div>
         <div class="two">
@@ -563,6 +599,20 @@ function paintServerSettings() {
     </div>
     <button class="btn primary block" id="sSave">Save settings</button>
     <div class="spacer"></div>`;
+
+  const paintWatch = () => {
+    $('#sWatchSum').textContent = watchList.length ? `${watchList.length} sender${watchList.length > 1 ? 's' : ''} watched (tap to edit)` : 'None yet (tap to add)';
+    $('#sWatchRows').innerHTML = watchList.map((x, i) => `<div class="watch-row"><span>${esc(x)}</span><button type="button" class="x" data-rm="${i}" aria-label="Remove ${esc(x)}">✕</button></div>`).join('');
+  };
+  const addWatch = () => {
+    const inp = $('#sWatchNew');
+    inp.value.split(/[\s,]+/).map(x => x.trim()).filter(Boolean).forEach(x => { if (!watchList.includes(x)) watchList.push(x); });
+    inp.value = ''; paintWatch();
+  };
+  $('#sWatchAdd').addEventListener('click', addWatch);
+  $('#sWatchNew').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addWatch(); } });
+  $('#sWatchRows').addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { watchList.splice(+b.dataset.rm, 1); paintWatch(); } });
+  paintWatch();
 
   api('usage').then(u => {
     const el = $('#sUsage'); if (!el) return;
@@ -630,7 +680,7 @@ function paintServerSettings() {
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
       brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
-      about_me: $('#sAbout').value.trim(), email_watch_query: $('#sEmail').value.trim(),
+      about_me: $('#sAbout').value.trim(), email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
       model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       app_url: location.origin + location.pathname
     });
