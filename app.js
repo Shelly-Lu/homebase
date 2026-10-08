@@ -86,13 +86,36 @@ const cached = loadSaved(CACHE_KEY) || {};
 const state = {
   today: cached.today || loadSaved('homebase.today'),
   tasks: cached.tasks || null, wardrobe: cached.wardrobe || null, looks: cached.looks || null,
-  chat: cached.chat || null, settings: null, fetchedAt: {}
+  chat: cached.chat || null, settings: null, fetchedAt: {},
+  me: cached.me || null          // {id, name, role: 'owner'|'member', person_id}
 };
+const isMember = () => state.me?.role === 'member';
+
+// Invite link from the owner: …#join=<base64 {u: backend url, c: invite code, n: name}>. Signs this phone in.
+(function handleJoin() {
+  const m = /^#join=([\w-]+)/.exec(location.hash || '');
+  if (!m) return;
+  try {
+    const j = JSON.parse(decodeURIComponent(escape(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')))));
+    if (j.u && j.c) {
+      setCfg({ url: j.u, token: j.c });
+      forgetLocalData();
+      sessionStorage.setItem('homebase.welcome', j.n || 'there');
+    }
+  } catch { /* bad link: fall through to Settings */ }
+  history.replaceState(null, '', location.pathname + '#today');
+})();
+// Clears everything saved on this phone for the previous person (used when signing in as someone else).
+function forgetLocalData() {
+  try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('homebase.today'); localStorage.removeItem('homebase.person'); } catch { /* ignore */ }
+  state.today = state.tasks = state.wardrobe = state.looks = state.chat = state.me = null;
+  state.fetchedAt = {}; state.chatFresh = false;
+}
 let saveTimer = null;
 function saveCache() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
     catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
   }, 250);
 }
@@ -125,6 +148,14 @@ function refreshAll() {
   bootP = fetchAll().then(b => {
     if (!b || typeof b !== 'object' || !b.today) throw new Error('The backend sent an empty answer. Deploy a New version of the web app and try again.');
     state.today = b.today;
+    if (b.me) {
+      state.me = b.me;
+      // first time on this phone: show this person's own wardrobe
+      if (!lsGet('homebase.person', '') && b.me.person_id) setPerson(b.me.person_id);
+      const hi = sessionStorage.getItem('homebase.welcome');
+      if (hi) { sessionStorage.removeItem('homebase.welcome'); toast(`Welcome, ${b.me.name}! You're signed in.`); }
+    }
+    if (b.family !== undefined && b.family !== null) state.familyCount = b.family;
     if (b.tasks) state.tasks = b.tasks;
     if (b.wardrobe) state.wardrobe = b.wardrobe;
     if (b.looks) state.looks = b.looks;
@@ -512,7 +543,7 @@ function freqText(t) {
 function taskRow(t) {
   return `<div class="list-row" data-task="${t.id}">
     <button class="check" data-done="${t.id}" aria-label="Mark done">${CHECK}</button>
-    <div class="grow tap" data-edit="${t.id}"><div class="title">${esc(t.name)}</div><div class="meta">${esc(freqText(t))}</div></div>
+    <div class="grow tap" data-edit="${t.id}"><div class="title">${t.private ? '<span class="lock" title="Only you can see this">🔒</span> ' : ''}${esc(t.name)}</div><div class="meta">${esc(freqText(t))}</div></div>
     ${dueLabel(t)}
   </div>`;
 }
@@ -565,6 +596,9 @@ function openTaskEditor(t, after) {
   const isNew = !t;
   t = t || { name: '', category: '', interval_days: null, interval_mode: 'ai', last_done: '', next_due: '', notes: '' };
   let repeat = isNew ? 'ai' : !t.interval_days ? 'once' : t.interval_mode === 'fixed' ? 'every' : 'ai';
+  // Privacy only matters with family members; only the person who added a task can change it.
+  const family = isMember() || (state.familyCount || 0) > 0;
+  const canSetPrivacy = family && (isNew || (t.owner || 'owner') === (state.me?.id || 'owner'));
   const body = openModal(`
     <h3>${isNew ? 'New task' : 'Edit task'}</h3>
     <label class="field"><span>What</span><input type="text" id="tName" value="${esc(t.name)}" placeholder="Clip cat's claws"></label>
@@ -581,6 +615,7 @@ function openTaskEditor(t, after) {
     <label class="field"><span>Category</span><input type="text" id="tCat" list="catList" value="${esc(t.category || '')}" placeholder="pets, home, kids…">
       <datalist id="catList"><option>pets</option><option>home</option><option>kids</option><option>health</option><option>car</option><option>garden</option><option>personal</option></datalist></label>
     <label class="field"><span>Notes</span><textarea id="tNotes" rows="2">${esc(t.notes || '')}</textarea></label>
+    ${canSetPrivacy ? `<label class="field check-field row-field"><input type="checkbox" id="tPrivate" ${t.private ? 'checked' : ''}><span>Only me <span class="muted small">(hidden from the rest of the family)</span></span></label>` : ''}
     <div class="btn-row"><button class="btn primary" id="tSave">Save</button>${isNew ? '' : '<button class="btn danger" id="tDel">Delete</button>'}</div>
     ${isNew ? '' : '<div class="section-title" style="margin-left:0">History</div><div id="tHist" class="muted small">Loading…</div>'}`);
 
@@ -608,6 +643,7 @@ function openTaskEditor(t, after) {
     if (!name) return toast('Give it a name.', true);
     const data = { name, category: $('#tCat').value.trim(), notes: $('#tNotes').value.trim() };
     if (!isNew) data.id = t.id;
+    if ($('#tPrivate')) data.private = $('#tPrivate').checked;
     if (repeat === 'ai') {
       if (isNew || !t.interval_days || t.interval_mode === 'fixed') data.ai_interval = true;
       if (!isNew && t.interval_mode === 'fixed') { data.interval_days = ''; }
@@ -1614,6 +1650,7 @@ function paintChat(loading = false) {
     msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${m.outfit ? `<div class="chat-outfit">${outfitBody(m.outfit)}</div>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
+  if (isMember()) $$('.chat-chips .chip', list).forEach(c => { if (/email/i.test(c.textContent)) c.remove(); });
   requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
 }
 
@@ -1647,11 +1684,11 @@ async function renderSettings() {
   const configured = isConfigured();
   view.innerHTML = `
     ${configured ? '' : `<div class="card"><div class="big" style="font-family:var(--serif);font-size:21px;margin-bottom:6px">Welcome to Homebase</div>
-      <div class="muted small">Paste your Apps Script web app URL and the app token from <b>setup()</b>. See the README for the 10-minute setup.</div></div>`}
+      <div class="muted small">Paste your Apps Script web app URL and the app token from <b>setup()</b>. See the README for the setup.<br>Joining your family's Homebase? Open the invite link you were sent instead.</div></div>`}
     <div class="card">
       <h2>Connection</h2>
       <label class="field"><span>Backend URL (Apps Script web app)</span><input type="url" id="sUrl" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></label>
-      <label class="field"><span>App token</span><input type="password" id="sToken" value="${esc(cfg.token || '')}"></label>
+      <label class="field"><span>App token or invite code</span><input type="password" id="sToken" value="${esc(cfg.token || '')}"></label>
       <div class="btn-row"><button class="btn primary" id="sConnect">${configured ? 'Save & test' : 'Connect'}</button></div>
       <div id="sStatus" class="muted small" style="margin-top:10px"></div>
     </div>
@@ -1660,11 +1697,14 @@ async function renderSettings() {
   $('#sConnect').onclick = e => busy(e.currentTarget, async () => {
     const url = $('#sUrl').value.trim(), token = $('#sToken').value.trim();
     if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) throw new Error('That does not look like an Apps Script web app URL.');
+    const old = getCfg();
     setCfg({ url, token });
+    if (old.token && old.token !== token) forgetLocalData();   // someone else's data shouldn't linger
     const p = await api('ping');
     state.settings = p.settings;
-    $('#sStatus').innerHTML = `✓ Connected.${p.has_ai_key ? '' : ' <b>No Gemini API key yet</b> — add GEMINI_API_KEY in Script Properties.'}`;
-    if (!p.settings.app_url) await api('settings.save', { app_url: location.origin + location.pathname });
+    if (p.me) { state.me = p.me; saveCache(); }
+    $('#sStatus').innerHTML = `✓ Connected${p.me ? ' as <b>' + esc(p.me.name) + '</b>' : ''}.${p.has_ai_key ? '' : ' <b>No AI key yet</b> — add CLAUDE_API_KEY (or GEMINI_API_KEY) in Script Properties.'}`;
+    if (p.me?.role !== 'member' && !p.settings.app_url) await api('settings.save', { app_url: location.origin + location.pathname });
     paintServerSettings();
   }).catch(fail);
 
@@ -1672,6 +1712,130 @@ async function renderSettings() {
     try { state.settings = await api('settings.get'); paintServerSettings(); }
     catch (e) { $('#serverSettings').innerHTML = ''; fail(e); }
   }
+}
+
+// ---------------- family (owner) ----------------
+function inviteLink(code, name) {
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify({ u: getCfg().url, c: code, n: name }))))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return location.origin + location.pathname + '#join=' + b64;
+}
+function showInviteLink(name, code) {
+  const link = inviteLink(code, name);
+  openModal(`<h3>Invite link for ${esc(name)}</h3>
+    <div class="muted small">Send it privately (a text or email). Opening it on their phone signs them in as ${esc(name)}. Anyone with the link can sign in as them, so if it ends up somewhere else, make a new link: the old one stops working.</div>
+    <input type="text" readonly id="invLink" value="${esc(link)}" style="margin:10px 0">
+    <div class="btn-row"><button class="btn primary" id="invShare">Share</button><button class="btn" id="invCopy">Copy</button><button class="btn ghost" id="invDone">Done</button></div>
+    <div class="muted small" style="margin-top:8px">On their phone: open the link in Chrome, then ⋮ → <b>Add to Home screen</b>.</div>`);
+  $('#invCopy').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Copied.')).catch(() => { $('#invLink').select(); });
+  $('#invShare').onclick = () => (navigator.share ? navigator.share({ title: 'Homebase', text: `Join our Homebase, ${name}:`, url: link }).catch(() => {}) : $('#invCopy').click());
+  $('#invDone').onclick = closeModal;
+}
+async function paintFamily() {
+  const el = $('#sFamily');
+  if (!el) return;
+  try {
+    const list = await api('users.list');
+    state.familyCount = list.filter(u => u.active).length;
+    const pname = id => (people().find(p => p.id === id) || {}).name || '—';
+    el.classList.toggle('muted', !list.length);
+    el.innerHTML = list.length ? list.map(u => `<div class="fam-row${u.active ? '' : ' off'}">
+        <div class="grow"><b>${esc(u.name)}</b>${u.active ? '' : ' <span class="muted small">(paused)</span>'}<br>
+          <span class="muted small">Wardrobe: ${esc(pname(u.person_id))} · ${u.last_seen ? 'last seen ' + esc(rel(u.last_seen.slice(0, 10))) : 'not signed in yet'} · alerts by ${esc(u.notifications)}</span></div>
+        <div class="fam-acts"><button class="btn small ghost" data-uact="newcode" data-uid="${esc(u.id)}" data-name="${esc(u.name)}">New link</button>
+          <button class="btn small ghost" data-uact="${u.active ? 'pause' : 'resume'}" data-uid="${esc(u.id)}">${u.active ? 'Pause' : 'Resume'}</button>
+          <button class="btn small ghost" data-uact="remove" data-uid="${esc(u.id)}" data-name="${esc(u.name)}">Remove</button></div></div>`).join('')
+      : 'Nobody yet. Tap “Invite someone”.';
+    $$('#sFamily [data-uact]').forEach(b => b.onclick = () => {
+      const id = b.dataset.uid, act = b.dataset.uact;
+      if (act === 'remove' && !confirm(`Remove ${b.dataset.name}? Their sign-in, chat and "Only me" tasks are deleted. Shared tasks and their wardrobe stay.`)) return;
+      busy(b, async () => {
+        if (act === 'newcode') { const r = await api('users.newcode', { id }); showInviteLink(b.dataset.name, r.code); }
+        else if (act === 'remove') await api('users.delete', { id });
+        else await api('users.update', { id, active: act === 'resume' });
+        paintFamily();
+      }).catch(fail);
+    });
+  } catch (e) { el.textContent = e.message; }
+}
+function openInvite() {
+  const ps = people().filter(p => p.id !== 'me');
+  openModal(`<h3>Invite someone</h3>
+    <label class="field"><span>Name</span><input type="text" id="invName" maxlength="30" placeholder="e.g. Alex"></label>
+    <label class="field"><span>Their wardrobe</span><select id="invWho">
+      <option value="new">New wardrobe (adult)</option><option value="new-child">New wardrobe (child)</option>
+      ${ps.map(p => `<option value="${esc(p.id)}">${esc(p.name)}'s wardrobe</option>`).join('')}</select></label>
+    <div class="muted small" style="margin-bottom:12px">They'll get their own sign-in link. You can pause or remove them anytime.</div>
+    <button class="btn primary block" id="invGo">Create invite link</button>`);
+  $('#invGo').onclick = e => {
+    const name = $('#invName').value.trim();
+    if (!name) return toast('Give them a name.', true);
+    const who = $('#invWho').value;
+    busy(e.currentTarget, async () => {
+      const r = await api('users.invite', { name, person_id: who.startsWith('new') ? 'new' : who, kind: who === 'new-child' ? 'child' : 'adult' });
+      if (state.settings) state.settings.people = JSON.stringify(r.people);
+      if (state.wardrobe) state.wardrobe.people = r.people;
+      invalidate(); refreshAll();
+      showInviteLink(name, r.code);
+      paintFamily();
+    }).catch(fail);
+  };
+}
+
+// ---------------- settings for a family member ----------------
+function paintMemberSettings() {
+  const s = state.settings || {};
+  $('#serverSettings').innerHTML = `
+    <div class="card">
+      <h2>You</h2>
+      <div>Signed in as <b>${esc(state.me?.name || '')}</b>.</div>
+      <div class="muted small" style="margin-top:6px">Tasks, the wardrobe and the family calendar are shared with the household. Your chat and your “Only me” tasks are private.</div>
+      <button class="btn small ghost" id="sSignOut" style="margin-top:10px">Sign out of this phone</button>
+    </div>
+    <div class="card">
+      <h2>Notifications</h2>
+      <label class="field"><span>Send my notifications with</span>
+        <div class="seg" id="sChan"><button type="button" data-v="telegram">Telegram</button><button type="button" data-v="ntfy">ntfy</button></div></label>
+      <div id="sTg" class="chan-box">
+        <ol class="small steps"><li>In Telegram, open <b id="sBot">the family's Homebase bot</b> and tap <b>Start</b>.</li><li>Tap <b>Link Telegram</b> below.</li></ol>
+        <div class="row"><button class="btn small primary" id="sTgLink" type="button">Link Telegram</button><span id="sTgStatus" class="muted small grow"></span></div>
+      </div>
+      <div id="sNtfy" class="chan-box">
+        <div class="muted small" style="margin-bottom:8px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic (server ntfy.sh). It's yours; keep it private.</div>
+        <div class="row"><input type="text" readonly value="${esc(s.ntfy_topic)}" id="sTopic"><button class="btn small" id="sCopy" type="button">Copy</button></div>
+      </div>
+      <button class="btn small" id="sTestN" style="margin-top:12px">Send test notification</button>
+    </div>
+    <button class="btn primary block" id="sSave">Save</button>
+    <div class="spacer"></div>`;
+  let channel = s.notify_channel === 'telegram' ? 'telegram' : 'ntfy';
+  const paintChan = () => {
+    $$('#sChan button').forEach(b => b.classList.toggle('on', b.dataset.v === channel));
+    $('#sTg').classList.toggle('hidden', channel !== 'telegram');
+    $('#sNtfy').classList.toggle('hidden', channel !== 'ntfy');
+  };
+  $$('#sChan button').forEach(b => b.onclick = () => { channel = b.dataset.v; paintChan(); });
+  paintChan();
+  api('telegram.status').then(st => {
+    if (st.bot && $('#sBot')) $('#sBot').textContent = st.bot;
+    if ($('#sTgStatus')) $('#sTgStatus').textContent = st.linked ? '✓ Linked' : st.has_token ? '' : 'Telegram isn\'t set up for this household yet; use ntfy.';
+  }).catch(() => {});
+  $('#sTgLink').onclick = e => busy(e.currentTarget, async () => {
+    await api('telegram.link');
+    $('#sTgStatus').textContent = '✓ Linked'; channel = 'telegram'; paintChan();
+    toast('Linked. A test message was sent to Telegram.');
+  }).catch(fail);
+  $('#sCopy').onclick = () => navigator.clipboard?.writeText($('#sTopic').value).then(() => toast('Copied.'));
+  $('#sTestN').onclick = e => busy(e.currentTarget, async () => {
+    const r = await api('notify.test');
+    toast(r.note ? r.note : `Sent via ${r.channel === 'telegram' ? 'Telegram' : 'ntfy'}. Check your phone.`);
+  }).catch(fail);
+  $('#sSave').onclick = e => busy(e.currentTarget, async () => { state.settings = await api('settings.save', { notify_channel: channel }); toast('Saved.'); }).catch(fail);
+  $('#sSignOut').onclick = () => {
+    if (!confirm('Sign out of Homebase on this phone?')) return;
+    setCfg({}); forgetLocalData();
+    location.hash = '#settings'; route();
+  };
 }
 
 // Watch-list helpers: rows <-> "from:(a OR b) extra" string
@@ -1694,6 +1858,7 @@ function buildWatch(list, extra) {
 
 function paintServerSettings() {
   const s = state.settings || {};
+  if (s.role === 'member' || isMember()) return paintMemberSettings();
   const watch = parseWatch(s.email_watch_query);
   const watchList = watch.list;
   const hours = [...Array(24).keys()];
@@ -1721,9 +1886,16 @@ function paintServerSettings() {
       <button type="button" class="btn small" id="sPeopleAdd">+ Add person</button>
     </div>
     <div class="card">
+      <h2>Family</h2>
+      <div class="muted small" style="margin-bottom:8px">Invite family members to use this Homebase on their own phone. Tasks, the wardrobe and the calendars you mark "Family" are shared; their chat and "Only me" tasks stay private. Your email stays yours. Everyone gets their own notifications.</div>
+      <div id="sFamily" class="muted small">Loading…</div>
+      <button type="button" class="btn small" id="sInvite" style="margin-top:8px">+ Invite someone</button>
+    </div>
+    <div class="card">
       <h2>Calendars</h2>
-      <div class="muted small" style="margin-bottom:8px">Which calendars Homebase reads for Today, reminders and outfit advice. Shared calendars (like Family) appear here once they're in your Google Calendar.</div>
+      <div class="muted small" style="margin-bottom:8px">Which calendars Homebase reads for Today, reminders and outfit advice. Shared calendars (like Family) appear here once they're in your Google Calendar.${(state.familyCount || 0) > 0 ? ' <b>Family</b> = family members can see it too.' : ''}</div>
       <div id="sCals" class="muted small">Loading calendars…</div>
+      <label class="field hidden" id="sFamTargetF" style="margin-top:10px"><span>Events family members add go to</span><select id="sFamTarget"></select></label>
     </div>
     <div class="card">
       <h2>Notifications</h2>
@@ -1762,15 +1934,24 @@ function paintServerSettings() {
           <details class="why" style="margin-top:8px"><summary>Advanced: extra Gmail search words</summary>
             <input type="text" id="sWatchExtra" value="${esc(watch.extra)}" placeholder="e.g. newer_than:30d" style="margin-top:6px"></details>
         </details>
-        <span class="muted small" style="display:block;margin-top:5px">Only emails from these senders are ever read, by the hourly check and by chat.</span></div>
-      <details class="why" style="margin-bottom:12px"><summary>AI models & today's usage</summary>
-        <div class="muted small" style="margin:8px 0">"auto" picks the newest free Gemini models for your key: Flash-Lite for everyday work (big free quota) and Flash for outfit advice (smarter, small quota). If one runs out, the other takes over.</div>
+        <span class="muted small" style="display:block;margin-top:5px">The hourly check reads only these senders and turns dates and to-dos into suggestions on Today (family members see the suggestions, not the emails).</span></div>
+      <label class="field check-field row-field"><input type="checkbox" id="sFullMail" ${s.email_full_search !== 'off' ? 'checked' : ''}><span>Let my chat search all my email <span class="muted small">(read-only; not spam, trash or promotions; never for family members)</span></span></label>
+      <details class="why" style="margin-bottom:12px"><summary>AI models, usage & cost</summary>
+        <label class="field" style="margin-top:8px"><span>AI provider</span><select id="sProvider">
+          <option value="auto" ${!s.ai_provider || s.ai_provider === 'auto' ? 'selected' : ''}>Auto: Claude if CLAUDE_API_KEY is set, otherwise Gemini</option>
+          <option value="claude" ${s.ai_provider === 'claude' ? 'selected' : ''}>Claude (paid per use, private)</option>
+          <option value="gemini" ${s.ai_provider === 'gemini' ? 'selected' : ''}>Gemini (free tier)</option></select></label>
+        <div class="two">
+          <label class="field"><span>Claude everyday model</span><input type="text" id="sClaudeMain" value="${esc(s.claude_model_main || 'claude-haiku-5-5')}"></label>
+          <label class="field"><span>Claude outfit model</span><input type="text" id="sClaudeSmart" value="${esc(s.claude_model_smart || 'claude-haiku-5-5')}"></label>
+        </div>
+        <div class="muted small" style="margin:0 0 8px">With a Gemini key too, Gemini takes over automatically if Claude fails (for example, out of credit). Gemini "auto" picks the newest free models: Flash-Lite for everyday work, Flash for outfits.</div>
         <label class="field"><span>Outfit picks you ask for</span><select id="sOutfitMode">
           <option value="best" ${s.outfit_mode !== 'fast' ? 'selected' : ''}>Best: smarter model (about 15–40 s; a quick pick shows meanwhile)</option>
           <option value="fast" ${s.outfit_mode === 'fast' ? 'selected' : ''}>Fast: lighter model (about 4–10 s)</option></select></label>
         <div class="two">
-          <label class="field"><span>Everyday model</span><input type="text" id="sModelMain" value="${esc(s.model_main || 'auto')}"></label>
-          <label class="field"><span>Outfit model</span><input type="text" id="sModelSmart" value="${esc(s.model_smart || 'auto')}"></label>
+          <label class="field"><span>Gemini everyday model</span><input type="text" id="sModelMain" value="${esc(s.model_main || 'auto')}"></label>
+          <label class="field"><span>Gemini outfit model</span><input type="text" id="sModelSmart" value="${esc(s.model_smart || 'auto')}"></label>
         </div>
         <div id="sUsage" class="muted small">Loading usage…</div>
       </details>
@@ -1822,19 +2003,28 @@ function paintServerSettings() {
   };
   paintPeople();
 
+  paintFamily();
+  $('#sInvite').onclick = openInvite;
+
   api('usage').then(u => {
     const el = $('#sUsage'); if (!el) return;
     const rows = Object.entries(u.calls || {});
-    el.innerHTML = `In use: <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (outfits).<br>` +
+    el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (outfits).<br>` +
       (rows.length ? 'Requests today: ' + rows.map(([m, n]) => `${esc(m)} ${n}`).join(' · ') : 'No AI requests yet today.') +
-      '<br>Your exact free limits are listed in Google AI Studio.';
+      (u.cost_month ? `<br>Claude this month: about <b>$${u.cost_month.usd.toFixed(2)}</b> (${Math.round(u.cost_month.tokens / 1000)}k tokens, estimate). Your real bill is at console.anthropic.com.` : '<br>Your exact free limits are listed in Google AI Studio.');
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
 
   api('calendars.list').then(cals => {
     const el = $('#sCals'); if (!el) return;
     el.classList.remove('muted', 'small');
-    el.innerHTML = cals.map(c => `<label class="row cal-row"><input type="checkbox" value="${esc(c.id)}" ${c.selected ? 'checked' : ''}>
-      <span class="grow">${esc(c.name)}${c.primary ? ' <span class="muted small">(yours)</span>' : ''}${!c.owned && !c.primary ? ' <span class="muted small">shared</span>' : ''}</span></label>`).join('');
+    const fam = (state.familyCount || 0) > 0;
+    el.innerHTML = cals.map(c => `<div class="row cal-row"><label class="row grow"><input type="checkbox" data-sel value="${esc(c.id)}" ${c.selected ? 'checked' : ''}>
+      <span class="grow">${esc(c.name)}${c.primary ? ' <span class="muted small">(yours)</span>' : ''}${!c.owned && !c.primary ? ' <span class="muted small">shared</span>' : ''}</span></label>
+      ${fam ? `<label class="fam-tog"><input type="checkbox" data-fam value="${esc(c.id)}" ${c.family ? 'checked' : ''}> Family</label>` : ''}</div>`).join('');
+    if (fam) {
+      $('#sFamTargetF').classList.remove('hidden');
+      $('#sFamTarget').innerHTML = cals.filter(c => !c.primary).map(c => `<option value="${esc(c.id)}" ${c.family_target ? 'selected' : ''}>${esc(c.name)}</option>`).join('') || '<option value="">(no shared calendar yet)</option>';
+    }
   }).catch(e => { $('#sCals') && ($('#sCals').textContent = 'Could not load calendars: ' + e.message); });
 
   $('#sLoc').onclick = e => {
@@ -1880,11 +2070,16 @@ function paintServerSettings() {
   }).catch(fail);
   $('#sClear').onclick = e => { if (confirm('Clear chat history?')) busy(e.currentTarget, async () => { await api('chat.clear'); state.chat = []; saveCache(); toast('Cleared.'); }).catch(fail); };
   $('#sSave').onclick = e => busy(e.currentTarget, async () => {
-    const calBoxes = $$('#sCals input[type=checkbox]');
+    const calBoxes = $$('#sCals input[data-sel]');
+    const famBoxes = $$('#sCals input[data-fam]');
     const calendar_ids = calBoxes.filter(b => b.checked).map(b => b.value);
     if (calBoxes.length && !calendar_ids.length) throw new Error('Pick at least one calendar.');
     state.settings = await api('settings.save', {
       ...(calBoxes.length ? { calendar_ids } : {}),
+      ...(famBoxes.length ? { member_calendar_ids: famBoxes.filter(b => b.checked).map(b => b.value), member_calendar_id: $('#sFamTarget').value } : {}),
+      email_full_search: $('#sFullMail').checked ? 'on' : 'off',
+      ai_provider: $('#sProvider').value,
+      claude_model_main: $('#sClaudeMain').value.trim() || 'claude-haiku-5-5', claude_model_smart: $('#sClaudeSmart').value.trim() || 'claude-haiku-5-5',
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
       brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, looks_hour: $('#sLooks').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
