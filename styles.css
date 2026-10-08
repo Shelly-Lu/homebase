@@ -289,3 +289,15 @@ img.collage { display: block; width: 100%; height: auto; border-radius: 14px; ba
 .jobbar .grow { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .progress { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
 .progress i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+
+.tmr-row { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.tmr-row .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14.5px; }
+
+.looks { display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; }
+.look-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.look-date { font-weight: 650; font-size: 14.5px; }
+.look-thumbs { display: flex; gap: 4px; flex: none; }
+.rate-row { margin-top: 4px; }
+
+.draft-note { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); margin-bottom: 6px; }
+.spinner.sm { width: 12px; height: 12px; border-width: 2px; }

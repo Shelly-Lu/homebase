@@ -78,15 +78,190 @@ function loadSaved(key) {
     return null;
   } catch { localStorage.removeItem(key); return null; }
 }
-function saveToday() {
-  if (state.today && typeof state.today === 'object') localStorage.setItem('homebase.today', JSON.stringify(state.today));
-  else localStorage.removeItem('homebase.today');
+// Instant tabs: everything the app shows is kept on the phone and painted straight away;
+// one background request ("boot") refreshes all tabs at once when the saved copy is older than FRESH_MS.
+const CACHE_KEY = 'homebase.cache.v2';
+const FRESH_MS = 60 * 1000;
+const cached = loadSaved(CACHE_KEY) || {};
+const state = {
+  today: cached.today || loadSaved('homebase.today'),
+  tasks: cached.tasks || null, wardrobe: cached.wardrobe || null, looks: cached.looks || null,
+  chat: cached.chat || null, settings: null, fetchedAt: {}
+};
+let saveTimer = null;
+function saveCache() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
+  }, 250);
+}
+function saveToday() { saveCache(); }
+const isStale = key => !state[key] || !state.fetchedAt[key] || Date.now() - state.fetchedAt[key] > FRESH_MS;
+// Something changed on the server: keep showing what we have, fetch fresh copies next time a tab opens.
+function invalidate() { state.fetchedAt = {}; }
+// Applies a task change right away, so lists don't wait for the refresh.
+function patchTask(t, removed) {
+  if (!t) return;
+  if (state.tasks) state.tasks = removed ? state.tasks.filter(x => x.id !== t.id)
+    : state.tasks.some(x => x.id === t.id) ? state.tasks.map(x => (x.id === t.id ? t : x)) : [...state.tasks, t];
+  if (state.today?.tasks_due) state.today.tasks_due = state.today.tasks_due.filter(x => x.id !== t.id);
+  invalidate(); saveCache();
 }
 
-const state = {
-  today: loadSaved('homebase.today'),
-  tasks: null, chat: null, settings: null
-};
+let bootP = null;
+async function fetchAll() {
+  try { return await api('boot'); }
+  catch (e) {
+    if (!/Unknown action/.test(e.message)) throw e;
+    // older backend without "boot": ask tab by tab
+    const [today, tasks, wardrobe] = await Promise.all([api('today'), api('tasks.list'), api('wardrobe.list').catch(() => null)]);
+    return { today, tasks, wardrobe };
+  }
+}
+function refreshAll() {
+  if (!isConfigured()) return Promise.resolve();
+  if (bootP) return bootP;
+  bootP = fetchAll().then(b => {
+    if (!b || typeof b !== 'object' || !b.today) throw new Error('The backend sent an empty answer. Deploy a New version of the web app and try again.');
+    state.today = b.today;
+    if (b.tasks) state.tasks = b.tasks;
+    if (b.wardrobe) state.wardrobe = b.wardrobe;
+    if (b.looks) state.looks = b.looks;
+    const now = Date.now();
+    ['today', 'tasks', 'wardrobe'].forEach(k => { state.fetchedAt[k] = now; });
+    state.wsel.forEach(id => { const it = wById(id); if (!it || !isPickable(it)) state.wsel.delete(id); });
+    saveCache();
+    repaintIfIdle();
+  }).catch(e => { if (!state.today) fail(e); else console.warn('refresh failed', e); })
+    .finally(() => { bootP = null; });
+  return bootP;
+}
+function currentTab() { return (location.hash || '#today').slice(1).split('?')[0] || 'today'; }
+// Repaints the open tab with fresh data, unless you're in the middle of something (a dialog, typing).
+function repaintIfIdle() {
+  if (!$('#modal').hidden) return;
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && view.contains(ae)) return;
+  const tab = currentTab();
+  if (tab === 'today') paintToday();
+  else if (tab === 'tasks') paintTasks();
+  else if (tab === 'wardrobe') paintWardrobe();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && isStale('today')) refreshAll(); });
+
+
+// ---------------- quick pick (on the phone, instant) ----------------
+// Rule-based outfit from clean clothes: warmth for the coolest daytime "feels like", rain gear when wet,
+// dress code from the calendar, skips things worn in the last few days, favours pieces from liked looks.
+// Shown at once; the AI's answer replaces it a few seconds later. Pure function (easy to test).
+function draftFrom({ items, wx, events = [], date, avoid = [], liked = [] }) {
+  if (!wx || wx.error || !items?.length) return null;
+  const C = wx.unit === '°C';
+  const toF = t => (C ? t * 9 / 5 + 32 : t);
+  const day = (wx.hourly || []).filter(h => h.hour >= 7 && h.hour <= 19);
+  const feelsLo = day.length ? Math.min(...day.map(h => h.feels)) : (wx.morning?.feels ?? wx.low);
+  const feelsHi = day.length ? Math.max(...day.map(h => h.feels)) : wx.high;
+  const f = toF(feelsLo);
+  const target = f >= 80 ? 1 : f >= 68 ? 2 : f >= 55 ? 3 : f >= 42 ? 4 : 5;
+  const wet = (wx.rain_chance || 0) >= 40;
+  const titles = events.filter(e => String(e.start || '').startsWith(date)).map(e => (e.title || '').toLowerCase()).join(' ');
+  const want = /wedding|gala|party|ceremony|funeral|concert|recital/.test(titles) ? 'dressy'
+    : /dinner|interview|meeting|client|office|church|presentation/.test(titles) ? 'smart'
+    : /gym|soccer|practice|swim|yoga|run|hike|tennis|basketball|game|pe class|workout/.test(titles) ? 'athletic' : 'casual';
+  const FORM = ['athletic', 'casual', 'smart', 'dressy'];
+  const daysSince = d => (d ? dayDiff(d, date) : 99);
+  const score = (it, warmFor = target) => {
+    let s = Math.abs((it.warmth || 3) - warmFor);
+    s += Math.abs(FORM.indexOf(it.formality || 'casual') - FORM.indexOf(want)) * 0.8;
+    const ds = daysSince(it.last_worn); if (ds >= 0 && ds < 3) s += 1.5 - ds * 0.4;
+    if (avoid.includes(it.id)) s += 3;
+    if (liked.includes(it.id)) s -= 0.6;
+    return s;
+  };
+  const best = (cat, extra, warmFor) => items.filter(i => i.category === cat)
+    .map(i => ({ i, s: score(i, warmFor) + (extra ? extra(i) : 0) })).sort((a, b) => a.s - b.s)[0]?.i || null;
+  const u = wx.unit || '';
+  const layers = [];
+  const dress = want === 'dressy' || want === 'smart' ? best('dress') : null;
+  const top = best('top', null, Math.min(target, 4));
+  const bottom = best('bottom', null, Math.min(target + 1, 5));
+  if (dress && (!top || score(dress) <= score(top))) layers.push({ item: dress.name, item_id: dress.id, why: want === 'dressy' ? 'for the event' : 'smart for the day' });
+  else {
+    if (top) layers.push({ item: top.name, item_id: top.id, why: `feels ${feelsLo}–${feelsHi}${u}` });
+    if (bottom) layers.push({ item: bottom.name, item_id: bottom.id });
+  }
+  if (!layers.length) return null;
+  const needCoat = f < 62 || wet;
+  const coat = needCoat ? best('outerwear', i => (wet && !i.waterproof ? 1.5 : 0), target) : null;
+  if (coat) layers.unshift({ item: coat.name, item_id: coat.id, why: wet ? `${wx.rain_chance}% rain` : `${feelsLo}${u} at the coolest` });
+  const shoes = best('shoes', i => (wet && !i.waterproof ? 1 : 0), target);
+  if (shoes) layers.push({ item: shoes.name, item_id: shoes.id, why: wet ? 'wet ground' : '' });
+  layers.forEach(l => { if (!l.why) delete l.why; });
+  const bring = [];
+  if (wet) bring.push('Umbrella');
+  if ((wx.uv_max || 0) >= 6) bring.push('Sunglasses');
+  const swing = feelsHi - feelsLo >= (C ? 8 : 15);
+  return {
+    id: 'draft', date, draft: true,
+    summary: layers.map(l => l.item).join(' + '),
+    layers, bring,
+    tips: swing && coat ? `Layer up early (${feelsLo}${u}); you can take the ${coat.name.toLowerCase()} off when it warms to ${feelsHi}${u}.` : ''
+  };
+}
+
+function draftOutfit(pid, which, avoid = []) {
+  const t = state.today;
+  const wx = which === 'tomorrow' ? t?.tomorrow_weather : t?.weather;
+  const date = which === 'tomorrow' ? addDaysStr(todayStr(), 1) : todayStr();
+  const items = (state.wardrobe?.items || []).filter(i => (i.owner || 'me') === pid && isPickable(i));
+  const liked = (state.looks || []).filter(l => l.person === pid && l.rating === 1).flatMap(l => l.item_ids || []);
+  const d = draftFrom({ items, wx, events: t?.events || [], date, avoid, liked });
+  if (d) d.person = pid;
+  return d;
+}
+function addDaysStr(day, n) {
+  const d = new Date(day + 'T12:00:00'); d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Gets an outfit as fast as possible: a prepared "different idea" (instant), else the quick pick (instant)
+// followed by the AI's answer. `show` is called with each version; return value is the final one.
+// Opens a dialog with the first version; later versions only update it while it's still open.
+function modalShow(fn) {
+  let opened = false;
+  return o => { if (!opened || !$('#modal').hidden) fn(o); opened = true; };
+}
+let pickSeq = 0;
+async function fastPick({ pid, which, note = '', different = false, show }) {
+  const seq = ++pickSeq;
+  const live = () => seq === pickSeq;
+  const cur = outfitFor(pid, which);
+  if (different) {
+    const alt = state.today?.alts?.[pid]?.[which];
+    if (alt) {
+      state.today.alts[pid][which] = null;
+      setOutfit(pid, which, alt); saveCache(); show(alt);
+      api('outfit.promote', { id: alt.id }).catch(e => console.warn(e));
+      return alt;
+    }
+  }
+  const avoid = different ? (cur?.layers || []).map(l => l.item_id).filter(Boolean) : [];
+  const d = note ? null : draftOutfit(pid, which, avoid);   // a special request ("dinner out") needs the AI
+  if (d) show(d);
+  try {
+    const o = await api('outfit.generate', { date: which, note, person: pid, different }, { timeoutMs: 25000 });
+    setOutfit(pid, which, o); saveCache();
+    if (live()) show(o);
+    return o;
+  } catch (e) {
+    if (!d) throw e;
+    d.ai_failed = true;
+    d.tips = (d.tips ? d.tips + ' ' : '') + "The AI didn't answer in time, so this is the quick pick from your clean clothes.";
+    if (live()) show(d);
+    return d;
+  }
+}
 
 // ---------------- router ----------------
 const VIEWS = { today: renderToday, chat: renderChat, wardrobe: renderWardrobe, tasks: renderTasks, settings: renderSettings };
@@ -110,16 +285,11 @@ $('#settingsBtn').addEventListener('click', () => (location.hash = '#settings'))
 // ================= TODAY =================
 async function renderToday() {
   paintToday();
-  try {
-    const t = await api('today');
-    if (!t || typeof t !== 'object') throw new Error('The backend sent an empty answer. Deploy a New version of the web app and try again.');
-    state.today = t;
-    saveToday();
-    if (location.hash === '' || location.hash === '#today') paintToday();
-  } catch (e) { fail(e); }
+  if (isStale('today')) refreshAll();
 }
 
 function paintToday() {
+  saveCache();
   const t = state.today;
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -198,6 +368,11 @@ function repaintOutfitCard() {
   bindOutfitCard();
 }
 
+function tomorrowRow(pid) {
+  const tm = outfitFor(pid, 'tomorrow');
+  return tm ? `<button type="button" class="tmr-row" id="seeTomorrow"><span class="muted small">Tomorrow</span><span class="grow">${esc(tm.summary || 'Ready')}</span><span aria-hidden="true">›</span></button>` : '';
+}
+
 function outfitCardInner(o) {
   const pid = currentPerson();
   const who = pid === 'me' ? '' : personName(pid);
@@ -209,7 +384,7 @@ function outfitCardInner(o) {
       <div class="muted small" style="margin-bottom:10px">Based on the hourly weather, the calendar, and time indoors vs outdoors${state.wardrobe?.items?.some(i => i.owner === pid) ? ', using clean clothes from the wardrobe' : ''}.</div>
       <label class="field"><input type="text" id="outfitNote" placeholder="Anything special? e.g. soccer game, dinner out"></label>
       <div class="btn-row"><button class="btn primary" id="pickOutfit">Suggest an outfit</button>
-      <button class="btn" id="planTomorrow">Tomorrow</button></div>`;
+      <button class="btn" id="planTomorrow">Tomorrow</button></div>${tomorrowRow(pid)}`;
   }
   return `${chips}<h2>${title}</h2>
     ${outfitBody(o)}
@@ -217,7 +392,7 @@ function outfitCardInner(o) {
     <div class="btn-row">
       <button class="btn" id="another">Different idea</button>
       <button class="btn ghost" id="planTomorrow">Tomorrow</button>
-    </div>`;
+    </div>${tomorrowRow(pid)}`;
 }
 
 function outfitBody(o, withWear = true) {
@@ -228,13 +403,14 @@ function outfitBody(o, withWear = true) {
     const pid = l.item_id ? wPhotoId(l.item_id) : '';
     return `<li>${pid ? `<span class="ph sm" data-photo="${esc(pid)}"></span>` : ''}<span class="li-item">${esc(l.item)}</span>${l.why ? `<span class="li-why">${esc(l.why)}</span>` : ''}</li>`;
   };
-  return `<div class="outfit-summary">${esc(o.summary || '')}</div>
+  const note = o.draft ? `<div class="draft-note">${o.ai_failed ? 'Quick pick' : '<span class="spinner sm"></span> Quick pick · the AI is checking it…'}</div>` : '';
+  return `${note}<div class="outfit-summary">${esc(o.summary || '')}</div>
     ${layers.length ? `<ul class="layers">${layers.map(row).join('')}</ul>` : ''}
     ${o.bring?.length ? `<div class="bring"><span class="muted small">Bring</span>${o.bring.map(b => `<span class="pill">${esc(b)}</span>`).join('')}</div>` : ''}
     ${o.tips ? `<p class="tips">${esc(o.tips)}</p>` : ''}
     ${ids.length ? `<div class="btn-row outfit-actions">
       ${withWear ? (allWorn ? '<span class="wear-done muted small">Logged as worn ✓</span>'
-        : `<button class="btn small" data-wear-outfit data-ids="${esc(ids.join(','))}" data-date="${esc(o.date || todayStr())}">I'm wearing this</button>`) : ''}
+        : `<button class="btn small" data-wear-outfit data-ids="${esc(ids.join(','))}" data-date="${esc(o.date || todayStr())}" data-note="${esc((o.summary || '').slice(0, 120))}">I'm wearing this</button>`) : ''}
       ${ids.length > 1 ? `<button class="btn small ghost" data-collage data-ids="${esc(ids.join(','))}">Collage</button>` : ''}
     </div>` : ''}`;
 }
@@ -249,20 +425,22 @@ function bindOutfitCard() {
       api('wardrobe.list').then(w => { state.wardrobe = w; repaintOutfitCard(); }).catch(() => {});
     } else ensurePhotos();
   }
-  const gen = async (btn, date, note) => busy(btn, async () => {
-    const o = await api('outfit.generate', { date, note, person: pid });
-    setOutfit(pid, date === 'today' ? 'today' : 'tomorrow', o);
-    saveToday();
-    if (date === 'today') repaintOutfitCard();
-    else showOutfitModal(o);
-  }).catch(fail);
+  const showToday = o => { setOutfit(pid, 'today', o); repaintOutfitCard(); };
+  const gen = (btn, which, note, different) => {
+    if (which === 'today') {
+      btn.disabled = true;
+      return fastPick({ pid, which, note, different, show: showToday }).catch(fail).finally(() => { if (btn.isConnected) btn.disabled = false; });
+    }
+    return busy(btn, () => fastPick({ pid, which, note, different, show: modalShow(showOutfitModal) })).catch(fail);
+  };
 
-  $('#pickOutfit', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', $('#outfitNote', card).value));
-  $('#another', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', 'Give a different idea than: ' + (cur?.summary || '')));
+  $('#pickOutfit', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', $('#outfitNote', card).value.trim()));
+  $('#another', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', '', true));
+  $('#seeTomorrow', card)?.addEventListener('click', () => { const tm = outfitFor(pid, 'tomorrow'); if (tm) showOutfitModal(tm); });
   $('#planTomorrow', card)?.addEventListener('click', e => {
     const tm = outfitFor(pid, 'tomorrow');
     if (tm) showOutfitModal(tm);
-    else gen(e.currentTarget, 'tomorrow', '');
+    else gen(e.currentTarget, 'tomorrow', '', false);
   });
 }
 
@@ -273,11 +451,9 @@ function showOutfitModal(o) {
     <div class="btn-row"><button class="btn" id="mAnother">Different idea</button><button class="btn primary" id="mClose">Got it</button></div>`);
   ensurePhotos();
   $('#mClose').onclick = closeModal;
-  $('#mAnother').onclick = e => busy(e.currentTarget, async () => {
-    const n = await api('outfit.generate', { date: o.date, note: 'Give a different idea than: ' + o.summary, person: pid });
-    if (state.today) setOutfit(pid, o.date === todayStr() ? 'today' : 'tomorrow', n);
-    showOutfitModal(n);
-  }).catch(fail);
+  $('#mAnother').onclick = e => busy(e.currentTarget, () =>
+    fastPick({ pid, which: o.date === todayStr() ? 'today' : 'tomorrow', different: true, show: n => { if (!$('#modal').hidden) showOutfitModal(n); if (n.date === todayStr()) repaintOutfitCard(); } })
+  ).catch(fail);
 }
 
 function suggestionsCard(list) {
@@ -346,7 +522,7 @@ function bindTaskRows(root, after) {
     try {
       const t = await api('tasks.done', { id: b.dataset.done });
       toast(t.active === false ? `Done: ${t.name}` : `Done. Next: ${rel(t.next_due)}${t.interval_mode === 'learned' ? ' (learned your rhythm)' : ''}`);
-      state.tasks = null;
+      patchTask(t, t.active === false);
       after?.();
     } catch (e) { b.classList.remove('done'); b.disabled = false; fail(e); }
   }));
@@ -359,9 +535,10 @@ function bindTaskRows(root, after) {
 async function renderTasks() {
   view.innerHTML = state.tasks ? '' : '<div class="card"><div class="skeleton" style="height:200px"></div></div>';
   if (state.tasks) paintTasks();
-  try { state.tasks = await api('tasks.list'); if (location.hash === '#tasks') paintTasks(); } catch (e) { fail(e); }
+  if (isStale('tasks')) refreshAll();
 }
 function paintTasks() {
+  saveCache();
   const all = state.tasks || [];
   const groups = [
     ['Needs attention', all.filter(t => ['overdue', 'today'].includes(t.state))],
@@ -446,12 +623,12 @@ function openTaskEditor(t, after) {
       const saved = await api('tasks.save', data);
       closeModal();
       toast(saved.interval_mode === 'ai' && saved.interval_reason ? `Every ${saved.interval_days} days. ${saved.interval_reason}` : 'Saved.');
-      state.tasks = null; after?.();
+      patchTask(saved); after?.();
     }).catch(fail);
   };
   $('#tDel')?.addEventListener('click', e => {
     if (!confirm(`Delete "${t.name}"?`)) return;
-    busy(e.currentTarget, async () => { await api('tasks.delete', { id: t.id }); closeModal(); state.tasks = null; after?.(); }).catch(fail);
+    busy(e.currentTarget, async () => { await api('tasks.delete', { id: t.id }); closeModal(); patchTask(t, true); after?.(); }).catch(fail);
   });
 }
 
@@ -462,7 +639,6 @@ const W_FORMAL = [['athletic', 'Athletic'], ['casual', 'Casual'], ['smart', 'Sma
 const W_DEFAULT_WEARS = { top: 1, bottom: 3, dress: 1, outerwear: 10, shoes: 7, accessory: 10, other: 3 };
 const CUT_MODES = [['keep', 'Keep the photo as it is'], ['ai', 'Remove background (AI, on this phone)'], ['flat', 'Remove a plain background (quick)']];
 const BG_LIB = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs';
-state.wardrobe = null;
 state.wsel = new Set();
 state.wfilter = 'all';
 state.wsize = 'all';
@@ -483,7 +659,7 @@ function parsePeople(str) {
 }
 function people() { return state.wardrobe?.people || state.today?.people || parsePeople(state.settings?.people); }
 function personName(id) { const ps = people(); return (ps.find(p => p.id === id) || ps[0]).name; }
-function currentPerson() { if (!people().some(p => p.id === state.person)) state.person = 'me'; return state.person; }
+function currentPerson() { return people().some(p => p.id === state.person) ? state.person : 'me'; }   // never overwrites the saved choice while data is still loading
 function setPerson(id) { state.person = id; lsSet('homebase.person', id); }
 function personChipsHtml() {
   const ps = people();
@@ -535,11 +711,9 @@ function paintPhotos() {
 async function ensurePhotos(extraIds = []) {
   const ids = [...new Set([...$$('[data-photo]').map(e => e.dataset.photo), ...extraIds].filter(Boolean))];
   const need = [];
-  for (const id of ids) {
-    if (photoMem.has(id)) continue;
-    const c = await idbGet(id);
-    if (c) photoMem.set(id, c); else need.push(id);
-  }
+  const missing = ids.filter(id => !photoMem.has(id));
+  const fromDisk = await Promise.all(missing.map(id => idbGet(id)));   // read the phone's copies in parallel
+  missing.forEach((id, i) => { if (fromDisk[i]) photoMem.set(id, fromDisk[i]); else need.push(id); });
   paintPhotos();
   const todo = need.filter(id => !photoInflight.has(id));
   todo.forEach(id => photoInflight.add(id));
@@ -761,11 +935,7 @@ async function describePending(items) {
 async function renderWardrobe() {
   if (state.wardrobe) paintWardrobe();
   else view.innerHTML = '<div class="card"><div class="skeleton" style="height:220px"></div></div>';
-  try {
-    state.wardrobe = await api('wardrobe.list');
-    state.wsel.forEach(id => { const it = wById(id); if (!it || !isPickable(it)) state.wsel.delete(id); });
-    if (location.hash === '#wardrobe') paintWardrobe();
-  } catch (e) { fail(e); }
+  if (isStale('wardrobe')) refreshAll();
 }
 
 function wCardHtml(i) {
@@ -785,6 +955,7 @@ function wCardHtml(i) {
 }
 
 function paintWardrobe() {
+  saveCache();
   const w = state.wardrobe;
   const pid = currentPerson();
   const mine = (w?.items || []).filter(i => i.owner === pid);
@@ -804,6 +975,7 @@ function paintWardrobe() {
         <div class="muted small" style="margin-bottom:8px">Uses only clean clothes, matched to today's weather and calendar.</div>
         <label class="field" style="margin-bottom:8px"><input type="text" id="aiNote" placeholder="Anything special? e.g. dinner out" autocomplete="off"></label>
         <button class="btn primary block" id="aiGo">Suggest from the wardrobe</button>
+        <button class="btn ghost block" id="histBtn" style="margin-top:8px">Past looks</button>
       </div>
       ${pending.length ? `<div class="laundry-bar info"><span>✨ <b>${pending.length}</b> need${pending.length > 1 ? '' : 's'} details</span><button class="btn small" id="descBtn">Describe with AI</button></div>` : ''}
       ${dirty.length ? `<div class="laundry-bar"><span>🧺 <b>${dirty.length}</b> item${dirty.length > 1 ? 's' : ''} need washing</span><button class="btn small" id="washBtn">Mark washed</button></div>` : ''}
@@ -815,11 +987,10 @@ function paintWardrobe() {
       <div class="muted small" style="margin:4px 2px 8px">Tap clothes to select what ${esc(who)} ${pid === 'me' ? 'are' : 'is'} wearing, then tap “Wear today”.</div>
       <div class="wgrid" id="wGrid">${shown.map(wCardHtml).join('')}</div>`}`;
 
-  $('#aiGo')?.addEventListener('click', e => busy(e.currentTarget, async () => {
-    const o = await api('outfit.generate', { date: 'today', note: $('#aiNote').value.trim(), person: pid });
-    setOutfit(pid, 'today', o); saveToday();
-    showWardrobeOutfit(o);
-  }).catch(fail));
+  $('#aiGo')?.addEventListener('click', e => busy(e.currentTarget, () =>
+    fastPick({ pid, which: 'today', note: $('#aiNote').value.trim(), show: modalShow(showWardrobeOutfit) })
+  ).catch(fail));
+  $('#histBtn')?.addEventListener('click', () => openHistory(pid));
   $('#washBtn')?.addEventListener('click', () => openLaundry(mine));
   $('#descBtn')?.addEventListener('click', () => describePending(mine));
   $$('#wFilter button').forEach(b => b.addEventListener('click', () => { state.wfilter = b.dataset.f; paintWardrobe(); }));
@@ -844,6 +1015,17 @@ function paintWardrobe() {
   ensurePhotos();
 }
 
+// Gives the selected items to another person (for example, clothes that were added under the wrong name).
+function openMoveTo(ids) {
+  openModal(`<h3>Move ${ids.length} item${ids.length > 1 ? 's' : ''} to…</h3>
+    <div class="btn-row" style="flex-wrap:wrap">${people().map(p => `<button class="btn" data-to="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`);
+  $$('#modalBody [data-to]').forEach(b => b.onclick = () => busy(b, async () => {
+    for (const id of ids) state.wardrobe = await api('wardrobe.save', { id, owner: b.dataset.to });
+    state.wsel.clear(); closeModal(); toast(`Moved to ${personName(b.dataset.to)}.`);
+    if (location.hash === '#wardrobe') paintWardrobe();
+  }).catch(fail));
+}
+
 function paintSelBar() {
   $('.wsel')?.remove();
   const n = state.wsel.size;
@@ -851,16 +1033,17 @@ function paintSelBar() {
   if (!n) return;
   const bar = document.createElement('div');
   bar.className = 'wsel';
-  bar.innerHTML = `<span><b>${n}</b> selected</span><button class="btn small ghost" id="wClear">Clear</button>${n > 1 ? '<button class="btn small" id="wColl">Collage</button>' : ''}<button class="btn small primary" id="wWear">Wear today</button>`;
+  bar.innerHTML = `<span><b>${n}</b> selected</span><button class="btn small ghost" id="wClear">Clear</button>${n > 1 ? '<button class="btn small" id="wColl">Collage</button>' : ''}${people().length > 1 ? '<button class="btn small" id="wMove">Move to…</button>' : ''}<button class="btn small primary" id="wWear">Wear today</button>`;
   document.body.appendChild(bar);
   $('#wClear').onclick = () => { state.wsel.clear(); paintWardrobe(); };
   $('#wColl')?.addEventListener('click', () => openCollage([...state.wsel]));
-  $('#wWear').onclick = e => busy(e.currentTarget, () => wearIds([...state.wsel], todayStr())).catch(fail);
+  $('#wMove')?.addEventListener('click', () => openMoveTo([...state.wsel]));
+  $('#wWear').onclick = e => busy(e.currentTarget, () => wearIds([...state.wsel], todayStr(), { source: 'manual' })).catch(fail);
 }
 
 // Records items as worn; the backend skips anything that needs washing.
-async function wearIds(ids, date) {
-  const res = await api('wardrobe.wear', { ids, date });
+async function wearIds(ids, date, meta = {}) {
+  const res = await api('wardrobe.wear', { ids, date, ...meta });
   state.wardrobe = { today: res.today, items: res.items, people: res.people };
   state.wsel.clear();
   const skipped = res.skipped || [];
@@ -904,11 +1087,9 @@ function showWardrobeOutfit(o) {
   ensurePhotos();
   $('#aiWear')?.addEventListener('click', e => busy(e.currentTarget, async () => { await wearIds(ids, o.date); closeModal(); }).catch(fail));
   $('#aiEdit')?.addEventListener('click', () => { state.wsel = new Set(ids.filter(id => { const i = wById(id); return i && isPickable(i); })); closeModal(); paintWardrobe(); });
-  $('#aiAgain')?.addEventListener('click', e => busy(e.currentTarget, async () => {
-    const n = await api('outfit.generate', { date: o.date, note: 'Give a different idea than: ' + o.summary, person: pid });
-    setOutfit(pid, o.date === todayStr() ? 'today' : 'tomorrow', n); saveToday();
-    showWardrobeOutfit(n);
-  }).catch(fail));
+  $('#aiAgain')?.addEventListener('click', e => busy(e.currentTarget, () =>
+    fastPick({ pid, which: o.date === todayStr() ? 'today' : 'tomorrow', different: true, show: n => { if (!$('#modal').hidden) showWardrobeOutfit(n); } })
+  ).catch(fail));
 }
 
 // --- adding clothes ---
@@ -1135,16 +1316,21 @@ function itemStatusHtml(it) {
 // --- collage: the chosen photos laid out on one picture (drawn on the phone, no AI) ---
 const CAT_ORDER = ['outerwear', 'top', 'dress', 'bottom', 'shoes', 'accessory', 'other'];
 
-// Where each piece goes on the picture: tops/outerwear/dresses on the left, bottoms on the right,
-// shoes and accessories in a row underneath. Pure function, so it can be tested without a canvas.
+// Where each piece goes on the picture. Clothes run top to bottom: tops/outerwear/dresses, bottoms, shoes
+// (several in one band sit side by side). Accessories (necklaces, bracelets, bags...) go in a column on the right.
+// Pure function, so it can be tested without a canvas.
 function collageSlots(items, W, H) {
   const pad = 70, gap = 44;
-  const group = c => c === 'bottom' ? 'low' : (c === 'shoes' || c === 'accessory' || c === 'other') ? 'small' : 'up';
-  const up = items.filter(i => group(i.category) === 'up'), low = items.filter(i => group(i.category) === 'low'), small = items.filter(i => group(i.category) === 'small');
+  const group = c => c === 'bottom' ? 1 : c === 'shoes' ? 2 : (c === 'accessory' || c === 'other') ? 3 : 0;
+  const weight = [1, 1.15, 0.6];
+  const side = items.filter(i => group(i.category) === 3);
+  const bands = [0, 1, 2].map(g => items.filter(i => group(i.category) === g)).map((list, g) => ({ list, w: weight[g] })).filter(b => b.list.length);
   const slots = [];
-  const grid = (list, x, y, w, h) => {
-    const n = list.length; if (!n) return;
-    const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3, rows = Math.ceil(n / cols);
+  const inner = H - 2 * pad, full = W - 2 * pad;
+  const sideW = side.length && bands.length ? Math.round((full - gap) * 0.3) : side.length ? full : 0;
+  const mainW = bands.length ? (side.length ? full - gap - sideW : full) : 0;
+  const layBand = (list, x, y, w, h) => {
+    const n = list.length, cols = n <= 3 ? n : n <= 6 ? 3 : 4, rows = Math.ceil(n / cols);
     const cw = (w - gap * (cols - 1)) / cols, ch = (h - gap * (rows - 1)) / rows;
     list.forEach((item, i) => {
       const r = Math.floor(i / cols), inRow = Math.min(cols, n - r * cols), c = i % cols;
@@ -1152,23 +1338,20 @@ function collageSlots(items, W, H) {
       slots.push({ item, x: x0 + c * (cw + gap), y: y + r * (ch + gap), w: cw, h: ch });
     });
   };
-  const column = (list, x, y, w, h) => {
-    if (list.length > 3) return grid(list, x, y, w, h);
-    const n = list.length, ch = (h - gap * (n - 1)) / n;
-    list.forEach((item, i) => slots.push({ item, x, y: y + i * (ch + gap), w, h: ch }));
-  };
-  let main = [up, low].filter(l => l.length);
-  const hasMain = main.length > 0, hasSmall = small.length > 0;
-  const inner = H - 2 * pad;
-  const smallH = hasSmall ? (hasMain ? Math.round(inner * 0.25) : inner) : 0;
-  const mainH = hasMain ? inner - (hasSmall ? smallH + gap : 0) : 0;
-  if (up.length && low.length) {
-    const cw = (W - 2 * pad - gap) / 2;
-    column(up, pad, pad, cw, mainH); column(low, pad + cw + gap, pad, cw, mainH);
-  } else if (hasMain) grid(main[0], pad, pad, W - 2 * pad, mainH);
-  if (hasSmall) {
-    if (!hasMain || small.length > 4) grid(small, pad, pad + (hasMain ? mainH + gap : 0), W - 2 * pad, smallH);
-    else { const cw = (W - 2 * pad - gap * (small.length - 1)) / small.length; small.forEach((item, i) => slots.push({ item, x: pad + i * (cw + gap), y: pad + mainH + gap, w: cw, h: smallH })); }
+  if (bands.length) {
+    const usable = inner - gap * (bands.length - 1), total = bands.reduce((t, b) => t + b.w, 0);
+    let y = pad;
+    bands.forEach(band => { const h = usable * band.w / total; layBand(band.list, pad, y, mainW, h); y += h + gap; });
+  }
+  if (side.length) {
+    const x = pad + (bands.length ? mainW + gap : 0);
+    if (bands.length) {
+      // a tidy column; more than 4 accessories use two columns
+      const cols = side.length > 4 ? 2 : 1, rows = Math.ceil(side.length / cols);
+      const cw = (sideW - gap * (cols - 1)) / cols, ch = Math.min(260, (inner - gap * (rows - 1)) / rows);
+      const top = pad + (inner - (rows * ch + (rows - 1) * gap)) / 2;
+      side.forEach((item, i) => slots.push({ item, x: x + (i % cols) * (cw + gap), y: top + Math.floor(i / cols) * (ch + gap), w: cw, h: ch }));
+    } else layBand(side, x, pad, sideW, inner);
   }
   return slots;
 }
@@ -1233,7 +1416,7 @@ async function renderCollage(items) {
   }
   return c.toDataURL('image/png');
 }
-async function openCollage(ids) {
+async function openCollage(ids, opts = {}) {
   const items = ids.map(wById).filter(Boolean).sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
   if (items.length < 2) return toast('Pick at least two items.', true);
   openModal('<h3>Collage</h3><div class="skeleton" style="height:260px"></div>');
@@ -1241,8 +1424,14 @@ async function openCollage(ids) {
     await ensurePhotos(items.map(i => i.photo_id));
     const url = await renderCollage(items);
     $('#modalBody').innerHTML = `<h3>Collage</h3><img class="collage" src="${url}" alt="Outfit collage">
-      <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="colShare">Share / save</button><button class="btn" id="colClose">Close</button></div>`;
+      <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="colShare">Share / save</button>${opts.noSave ? '' : '<button class="btn" id="colKeep">Save look</button>'}<button class="btn ghost" id="colClose">Close</button></div>`;
     $('#colClose').onclick = closeModal;
+    const keep = $('#colKeep');
+    keep?.addEventListener('click', () => busy(keep, async () => {
+      await api('looks.save', { item_ids: items.map(i => i.id), date: todayStr() });
+      keep.textContent = 'Saved ✓'; keep.disabled = true;
+      toast('Saved to Past looks.');
+    }).catch(fail));
     $('#colShare').onclick = async () => {
       try {
         const blob = await (await fetch(url)).blob();
@@ -1254,6 +1443,56 @@ async function openCollage(ids) {
   } catch (e) { closeModal(); fail(e); }
 }
 
+// --- past looks: what was worn or saved. The AI learns from these (and from the 👍/👎). ---
+const RATE = { 1: '👍', '-1': '👎' };
+async function openHistory(pid) {
+  openModal(`<h3>Past looks${pid === 'me' ? '' : ' · ' + esc(personName(pid))}</h3><div class="skeleton" style="height:160px"></div>`);
+  try {
+    const list = await api('looks.list', { person: pid });
+    const shown = list.map(l => ({ ...l, items: (l.item_ids || []).map(wById).filter(Boolean) })).filter(l => l.items.length >= 2);
+    if (!shown.length) {
+      $('#modalBody').innerHTML = `<h3>Past looks</h3><div class="empty small">Nothing yet. Looks are remembered when you tap <b>Wear today</b> or <b>I'm wearing this</b> with two or more items, or <b>Save look</b> on a collage. Rate them 👍 or 👎 and the AI learns your taste.</div>
+        <div class="btn-row"><button class="btn primary" id="hClose">Close</button></div>`;
+      $('#hClose').onclick = closeModal; return;
+    }
+    $('#modalBody').innerHTML = `<h3>Past looks${pid === 'me' ? '' : ' · ' + esc(personName(pid))}</h3>
+      <div class="muted small" style="margin-bottom:8px">Tap one to see the collage. The AI uses these (and your 👍/👎) to pick outfits you'd like.</div>
+      <div class="looks">${shown.map(l => `<button type="button" class="look-row" data-look="${esc(l.id)}">
+        <span class="look-date">${esc(niceDate(l.date))}<br><span class="muted small">${l.worn ? (l.source === 'ai' ? 'AI pick, worn' : 'Worn') : 'Saved'}${l.rating ? ' ' + RATE[l.rating] : ''}</span></span>
+        <span class="look-thumbs">${l.items.slice(0, 5).map(i => `<span class="ph sm" data-photo="${esc(i.photo_id || '')}"></span>`).join('')}</span>
+      </button>`).join('')}</div>
+      <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="hClose">Close</button></div>`;
+    $('#hClose').onclick = closeModal;
+    ensurePhotos(shown.flatMap(l => l.items.slice(0, 5).map(i => i.photo_id)));
+    $$('#modalBody [data-look]').forEach(b => b.onclick = () => openLook(shown.find(l => l.id === b.dataset.look), pid));
+  } catch (e) { closeModal(); fail(e); }
+}
+
+async function openLook(look, pid) {
+  const items = look.items.slice().sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
+  openModal(`<h3>${esc(niceDate(look.date))}</h3><div class="skeleton" style="height:260px"></div>`);
+  try {
+    await ensurePhotos(items.map(i => i.photo_id));
+    const url = await renderCollage(items);
+    const paint = () => {
+      $('#modalBody').innerHTML = `<h3>${esc(niceDate(look.date))}</h3>
+        ${look.note ? `<div class="muted small">${esc(look.note)}</div>` : ''}
+        <img class="collage" src="${url}" alt="Collage">
+        <div class="btn-row rate-row"><button class="btn small ${look.rating === 1 ? 'primary' : ''}" data-rate="1" aria-label="Liked">👍 Liked</button><button class="btn small ${look.rating === -1 ? 'primary' : ''}" data-rate="-1" aria-label="Not for me">👎 Not for me</button></div>
+        <div class="btn-row" style="margin-top:10px"><button class="btn" id="lkWear">Wear again today</button><button class="btn ghost" id="lkDel">Delete</button><button class="btn ghost" id="lkBack">Back</button></div>`;
+      $$('#modalBody [data-rate]').forEach(b => b.onclick = () => busy(b, async () => {
+        const r = Number(b.dataset.rate) === look.rating ? 0 : Number(b.dataset.rate);
+        await api('looks.save', { id: look.id, rating: r, person: pid });
+        look.rating = r; paint();
+      }).catch(fail));
+      $('#lkWear').onclick = e => busy(e.currentTarget, async () => { await wearIds(items.map(i => i.id), todayStr(), { source: 'manual' }); closeModal(); }).catch(fail);
+      $('#lkDel').onclick = e => { if (confirm('Delete this look?')) busy(e.currentTarget, async () => { await api('looks.delete', { id: look.id }); openHistory(pid); }).catch(fail); };
+      $('#lkBack').onclick = () => openHistory(pid);
+    };
+    paint();
+  } catch (e) { closeModal(); fail(e); }
+}
+
 // Delegated clicks: work in the Today card, chat, and modals.
 document.addEventListener('click', e => {
   const c = e.target.closest('[data-collage]');
@@ -1262,7 +1501,7 @@ document.addEventListener('click', e => {
   if (!b) return;
   const ids = b.dataset.ids.split(',').filter(Boolean);
   busy(b, async () => {
-    const res = await wearIds(ids, b.dataset.date);
+    const res = await wearIds(ids, b.dataset.date, { source: 'ai', note: b.dataset.note || '' });
     $$(`[data-wear-outfit][data-date="${b.dataset.date}"]`).forEach(x => { x.outerHTML = '<span class="muted small wear-done">Logged as worn ✓</span>'; });
     return res;
   }).catch(fail);
@@ -1297,11 +1536,17 @@ async function renderChat() {
   });
   composer.addEventListener('submit', e => { e.preventDefault(); const v = ta.value.trim(); if (v) { ta.value = ''; grow(); sendChat(v); } });
 
+  // Saved conversation shows at once; the server copy is checked once per app start.
+  const loadHistory = () => api('chat.history', { limit: 30 }).then(h => {
+    state.chatFresh = true;
+    const fresh = h.map(m => ({ role: m.role, content: m.content }));
+    if (state.chat?.some(m => m.typing)) return;                // a reply is on its way; don't disturb
+    state.chat = fresh; saveCache(); if (location.hash === '#chat') paintChat();
+  });
   if (!state.chat) {
     paintChat(true);
-    try { state.chat = (await api('chat.history', { limit: 30 })).map(m => ({ role: m.role, content: m.content })); }
-    catch (e) { state.chat = []; fail(e); }
-  }
+    try { await loadHistory(); } catch (e) { state.chat = []; fail(e); }
+  } else if (!state.chatFresh) loadHistory().catch(e => console.warn(e));
   paintChat();
   const pending = sessionStorage.getItem('homebase.pending');
   if (pending) { sessionStorage.removeItem('homebase.pending'); sendChat(pending); }
@@ -1330,9 +1575,9 @@ async function sendChat(text) {
   try {
     const r = await api('chat.send', { message: text }, { timeoutMs: 120000 });
     state.chat.pop();
-    state.chat.push({ role: 'assistant', content: r.reply, outfit: r.outfit });
+    state.chat.push({ role: 'assistant', content: r.reply, outfit: r.outfit }); saveCache();
     if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
-    state.tasks = null; // the assistant may have changed tasks
+    invalidate(); // the assistant may have changed tasks, clothes or the calendar
   } catch (e) {
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: '⚠️ ' + e.message });
@@ -1446,6 +1691,7 @@ function paintServerSettings() {
         <label class="field"><span>Morning brief</span><select id="sBrief">${hourOpts(s.brief_hour, true)}</select></label>
         <label class="field"><span>Evening check-in</span><select id="sEve">${hourOpts(s.evening_hour, true)}</select></label>
       </div>
+      <label class="field"><span>Tomorrow's outfits for everyone (made each night, with a collage in the app)</span><select id="sLooks">${hourOpts(s.looks_hour === undefined ? '21' : s.looks_hour, true)}</select></label>
       <button class="btn small" id="sTestN">Send test notification</button>
     </div>
     <div class="card">
@@ -1571,9 +1817,9 @@ function paintServerSettings() {
   $('#sScan').onclick = e => busy(e.currentTarget, async () => {
     const list = await api('email.scan', {}, { timeoutMs: 180000 });
     toast(list.length ? `${list.length} item(s) waiting on Today.` : 'Nothing new found.');
-    state.today = null;
+    invalidate();
   }).catch(fail);
-  $('#sClear').onclick = e => { if (confirm('Clear chat history?')) busy(e.currentTarget, async () => { await api('chat.clear'); state.chat = []; toast('Cleared.'); }).catch(fail); };
+  $('#sClear').onclick = e => { if (confirm('Clear chat history?')) busy(e.currentTarget, async () => { await api('chat.clear'); state.chat = []; saveCache(); toast('Cleared.'); }).catch(fail); };
   $('#sSave').onclick = e => busy(e.currentTarget, async () => {
     const calBoxes = $$('#sCals input[type=checkbox]');
     const calendar_ids = calBoxes.filter(b => b.checked).map(b => b.value);
@@ -1582,14 +1828,13 @@ function paintServerSettings() {
       ...(calBoxes.length ? { calendar_ids } : {}),
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
-      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
+      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, looks_hour: $('#sLooks').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
       about_me: $('#sAbout').value.trim(), email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
       model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       people: plist.map(p => ({ ...p, name: String(p.name || '').trim() || 'Person' })),
       app_url: location.origin + location.pathname
     });
-    state.wardrobe = null;
-    state.today = null; localStorage.removeItem('homebase.today');
+    invalidate(); refreshAll();
     toast('Saved.');
   }).catch(fail);
 }
