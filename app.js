@@ -1508,13 +1508,41 @@ document.addEventListener('click', e => {
 });
 
 // ================= CHAT =================
+// --- sharing into Homebase (Android Share menu → service worker → here) ---
+const SHARE_PROMPT = 'Find the dates, events and to-dos in this and suggest what to add.';
+async function shareImage(fileOrBlob) {
+  const f = fileOrBlob instanceof File ? fileOrBlob : new File([fileOrBlob], 'shared', { type: fileOrBlob.type || 'image/jpeg' });
+  const s = await shrinkImage(f, 1600);   // big enough to read a flyer, small enough to send quickly
+  if (s.mime !== 'image/jpeg') {          // flatten transparent images for reading
+    const data = await urlToJpegData(s.url);
+    return { data, mime: 'image/jpeg', url: 'data:image/jpeg;base64,' + data };
+  }
+  return { data: s.data, mime: s.mime, url: s.url };
+}
+async function takeShared() {
+  if (!('caches' in window)) return null;
+  const c = await caches.open('homebase-share');
+  const m = await c.match('./__shared/meta');
+  if (!m) return null;
+  const meta = await m.json();
+  const im = await c.match('./__shared/image');
+  await c.delete('./__shared/meta'); await c.delete('./__shared/image');
+  if (Date.now() - (meta.at || 0) > 10 * 60 * 1000) return null;   // stale leftovers
+  const out = { title: meta.title || '', text: meta.text || '', url: meta.url || '' };
+  if (im) out.image = await shareImage(await im.blob());
+  if (!out.text && !out.url && !out.image && !out.title) return null;
+  return out;
+}
+
 const CHAT_CHIPS = ['What should I wear today?', "What's due this week?", 'What should I wear tomorrow?', 'Anything in my watched emails to act on?'];
 
 async function renderChat() {
   view.innerHTML = '<div class="chat" id="chatList"></div>';
   const composer = document.createElement('form');
   composer.className = 'composer';
-  composer.innerHTML = `<textarea id="chatInput" rows="1" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
+  composer.innerHTML = `<div id="shareChip" class="share-chip" hidden></div>
+    <button type="button" class="attach" id="chatAttach" aria-label="Add a photo or screenshot">📎</button><input type="file" id="chatFile" accept="image/*" hidden>
+    <textarea id="chatInput" rows="1" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
     <button class="btn primary" aria-label="Send">Send</button>`;
   document.body.appendChild(composer);
   const ta = $('#chatInput');
@@ -1534,7 +1562,31 @@ async function renderChat() {
   ta.addEventListener('beforeinput', e => {
     if (e.inputType === 'insertLineBreak' && !shiftDown) { e.preventDefault(); composer.requestSubmit(); }
   });
-  composer.addEventListener('submit', e => { e.preventDefault(); const v = ta.value.trim(); if (v) { ta.value = ''; grow(); sendChat(v); } });
+  composer.addEventListener('submit', e => {
+    e.preventDefault();
+    const v = ta.value.trim() || (state.pendingShare ? SHARE_PROMPT : '');
+    if (v) { ta.value = ''; grow(); sendChat(v); }
+  });
+  // something shared from another app (Android Share menu), or a photo picked with 📎
+  const showShare = () => {
+    const chip = $('#shareChip'), sh = state.pendingShare;
+    chip.hidden = !sh;
+    if (sh) {
+      const words = (sh.title ? sh.title + ' · ' : '') + (sh.text || '') + (sh.url && !(sh.text || '').includes(sh.url) ? ' ' + sh.url : '');
+      chip.innerHTML = `${sh.image ? `<img src="${sh.image.url}" alt="">` : ''}<span class="grow">${esc(words.trim().slice(0, 160) || 'Photo')}</span><button type="button" class="x" id="shareX" aria-label="Remove">✕</button>`;
+      $('#shareX').onclick = () => { state.pendingShare = null; showShare(); };
+      if (!ta.value.trim()) ta.value = SHARE_PROMPT;
+    }
+    grow();
+  };
+  $('#chatAttach').onclick = () => $('#chatFile').click();
+  $('#chatFile').onchange = async e => {
+    const f = e.target.files?.[0]; if (!f) return;
+    try { state.pendingShare = { ...(state.pendingShare || {}), image: await shareImage(f) }; showShare(); } catch (err) { fail(err); }
+    e.target.value = '';
+  };
+  try { const sh = await takeShared(); if (sh) state.pendingShare = sh; } catch (err) { console.warn(err); }
+  showShare();
 
   // Saved conversation shows at once; the server copy is checked once per app start.
   const loadHistory = () => api('chat.history', { limit: 30 }).then(h => {
@@ -1570,10 +1622,14 @@ async function sendChat(text) {
   if (chatBusy) return toast('One moment…');
   chatBusy = true;
   state.chat = state.chat || [];
-  state.chat.push({ role: 'user', content: text }, { role: 'assistant', content: '', typing: true });
+  const sh = state.pendingShare; state.pendingShare = null;
+  if ($('#shareChip')) { $('#shareChip').hidden = true; }
+  const shown = sh ? text + '\n📎 ' + (sh.image ? 'photo' + (sh.text || sh.url ? ' + ' : '') : '') + ((sh.title || sh.text || sh.url || '').slice(0, 80)) : text;
+  state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: '', typing: true });
   paintChat();
   try {
-    const r = await api('chat.send', { message: text }, { timeoutMs: 120000 });
+    const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
+    const r = await api('chat.send', { message: text, shared }, { timeoutMs: 120000 });
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: r.reply, outfit: r.outfit }); saveCache();
     if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
