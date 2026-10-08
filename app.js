@@ -250,7 +250,7 @@ async function fastPick({ pid, which, note = '', different = false, show }) {
   const d = note ? null : draftOutfit(pid, which, avoid);   // a special request ("dinner out") needs the AI
   if (d) show(d);
   try {
-    const o = await api('outfit.generate', { date: which, note, person: pid, different }, { timeoutMs: 25000 });
+    const o = await api('outfit.generate', { date: which, note, person: pid, different }, { timeoutMs: state.settings?.outfit_mode === 'fast' ? 30000 : 90000 });
     setOutfit(pid, which, o); saveCache();
     if (live()) show(o);
     return o;
@@ -403,7 +403,7 @@ function outfitBody(o, withWear = true) {
     const pid = l.item_id ? wPhotoId(l.item_id) : '';
     return `<li>${pid ? `<span class="ph sm" data-photo="${esc(pid)}"></span>` : ''}<span class="li-item">${esc(l.item)}</span>${l.why ? `<span class="li-why">${esc(l.why)}</span>` : ''}</li>`;
   };
-  const note = o.draft ? `<div class="draft-note">${o.ai_failed ? 'Quick pick' : '<span class="spinner sm"></span> Quick pick · the AI is checking it…'}</div>` : '';
+  const note = o.draft ? `<div class="draft-note">${o.ai_failed ? 'Quick pick' : '<span class="spinner sm"></span> Quick pick · the AI is choosing a better one…'}</div>` : '';
   return `${note}<div class="outfit-summary">${esc(o.summary || '')}</div>
     ${layers.length ? `<ul class="layers">${layers.map(row).join('')}</ul>` : ''}
     ${o.bring?.length ? `<div class="bring"><span class="muted small">Bring</span>${o.bring.map(b => `<span class="pill">${esc(b)}</span>`).join('')}</div>` : ''}
@@ -1709,6 +1709,9 @@ function paintServerSettings() {
         <span class="muted small" style="display:block;margin-top:5px">Only emails from these senders are ever read, by the hourly check and by chat.</span></div>
       <details class="why" style="margin-bottom:12px"><summary>AI models & today's usage</summary>
         <div class="muted small" style="margin:8px 0">"auto" picks the newest free Gemini models for your key: Flash-Lite for everyday work (big free quota) and Flash for outfit advice (smarter, small quota). If one runs out, the other takes over.</div>
+        <label class="field"><span>Outfit picks you ask for</span><select id="sOutfitMode">
+          <option value="best" ${s.outfit_mode !== 'fast' ? 'selected' : ''}>Best: smarter model (about 15–40 s; a quick pick shows meanwhile)</option>
+          <option value="fast" ${s.outfit_mode === 'fast' ? 'selected' : ''}>Fast: lighter model (about 4–10 s)</option></select></label>
         <div class="two">
           <label class="field"><span>Everyday model</span><input type="text" id="sModelMain" value="${esc(s.model_main || 'auto')}"></label>
           <label class="field"><span>Outfit model</span><input type="text" id="sModelSmart" value="${esc(s.model_smart || 'auto')}"></label>
@@ -1830,7 +1833,7 @@ function paintServerSettings() {
       indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
       brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, looks_hour: $('#sLooks').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
       about_me: $('#sAbout').value.trim(), email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
-      model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
+      outfit_mode: $('#sOutfitMode').value, model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       people: plist.map(p => ({ ...p, name: String(p.name || '').trim() || 'Person' })),
       app_url: location.origin + location.pathname
     });
