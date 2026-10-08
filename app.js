@@ -424,8 +424,15 @@ async function renderChat() {
     const l = $('#chatList'); if (l) l.style.paddingBottom = (composer.offsetHeight + 16) + 'px';
   };
   ta.addEventListener('input', grow);
+  // Enter sends; Shift+Enter adds a new line. Phone keyboards can report Enter only via beforeinput.
+  let shiftDown = false;
   ta.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(hover: hover)').matches) { e.preventDefault(); composer.requestSubmit(); }
+    shiftDown = e.shiftKey;
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composer.requestSubmit(); }
+  });
+  ta.addEventListener('keyup', e => { shiftDown = e.shiftKey; });
+  ta.addEventListener('beforeinput', e => {
+    if (e.inputType === 'insertLineBreak' && !shiftDown) { e.preventDefault(); composer.requestSubmit(); }
   });
   composer.addEventListener('submit', e => { e.preventDefault(); const v = ta.value.trim(); if (v) { ta.value = ''; grow(); sendChat(v); } });
 
