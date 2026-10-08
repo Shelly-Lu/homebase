@@ -342,10 +342,7 @@ function paintToday() {
   const wx = t.weather || {};
   view.innerHTML = `
     <div class="hello">${greet}<small>${dateLine}${t.today !== todayStr() ? ' · updating…' : ''}</small></div>
-    <form class="quicklog" id="quicklog">
-      <input type="text" name="q" placeholder="Tell me what you did or need…" autocomplete="off">
-      <button class="btn primary" aria-label="Send">Send</button>
-    </form>
+    <div id="quickSlot"></div>
     ${weatherCard(wx)}
     <div class="card" id="outfitCard">${outfitCardInner(outfitFor(currentPerson(), 'today'))}</div>
     ${t.suggestions?.length ? suggestionsCard(t.suggestions) : ''}
@@ -358,13 +355,7 @@ function paintToday() {
       ${eventsList(t.events || [])}
     </div>`;
 
-  $('#quicklog').addEventListener('submit', e => {
-    e.preventDefault();
-    const q = $('input', e.target).value.trim();
-    if (!q) return;
-    sessionStorage.setItem('homebase.pending', q);
-    location.hash = '#chat';
-  });
+  $('#quickSlot').replaceWith(quickBox());   // the same box survives repaints (typed text, attachment, result)
   bindTaskRows(view, () => renderToday());
   bindOutfitCard();
   bindSuggestions();
@@ -1551,6 +1542,151 @@ document.addEventListener('click', e => {
   }).catch(fail);
 });
 
+// ================= HOME: quick box =================
+// Type or say what happened. If the assistant saved something and has no question, a short confirmation
+// (with Undo) shows right here; questions and conversations continue in the Chat tab.
+let quickEl = null, quickShare = null, quickMic = false, quickTimer = null;
+function quickBox() {
+  if (quickEl) return quickEl;
+  quickEl = document.createElement('div');
+  quickEl.className = 'card quick';
+  quickEl.innerHTML = `<form id="qForm" class="qform">
+      <textarea id="qIn" rows="1" placeholder="Tell me what happened or ask anything…" autocomplete="off"></textarea>
+      <div class="qbar">
+        <button type="button" class="attach" id="qAttach" aria-label="Add a photo or screenshot">📎</button><input type="file" id="qFile" accept="image/*" hidden>
+        ${SR ? '<button type="button" class="attach mic" id="qMic" aria-label="Speak">🎤</button>' : ''}
+        <span class="grow muted small" id="qHint"></span>
+        <button class="btn primary" id="qSend">Send</button>
+      </div></form>
+    <div id="qChip" class="share-chip" hidden></div>
+    <div id="qResult"></div>`;
+  const ta = $('#qIn', quickEl);
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); quickSend(); } });
+  $('#qForm', quickEl).addEventListener('submit', e => { e.preventDefault(); quickSend(); });
+  $('#qAttach', quickEl).onclick = () => $('#qFile', quickEl).click();
+  $('#qFile', quickEl).onchange = async e => {
+    const f = e.target.files?.[0]; if (!f) return;
+    try { quickShare = { image: await shareImage(f) }; paintQuickChip(); } catch (err) { fail(err); }
+    e.target.value = '';
+  };
+  $('#qMic', quickEl)?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { quickMic = true; grow(); }));
+  return quickEl;
+}
+function paintQuickChip() {
+  const chip = $('#qChip', quickEl);
+  chip.hidden = !quickShare;
+  if (!quickShare) return;
+  chip.innerHTML = `${quickShare.image ? `<img src="${quickShare.image.url}" alt="">` : ''}<span class="grow">${esc((quickShare.text || 'Photo').slice(0, 120))}</span><button type="button" class="x" aria-label="Remove">✕</button>`;
+  $('.x', chip).onclick = () => { quickShare = null; paintQuickChip(); };
+}
+async function quickSend() {
+  const ta = $('#qIn', quickEl), res = $('#qResult', quickEl), btn = $('#qSend', quickEl);
+  const text = ta.value.trim() || (quickShare ? SHARE_PROMPT : '');
+  if (!text || btn.disabled) return;
+  const sh = quickShare, viaMic = quickMic;
+  quickShare = null; quickMic = false; paintQuickChip();
+  ta.value = ''; ta.style.height = 'auto';
+  clearTimeout(quickTimer);
+  res.innerHTML = '<div class="logged working"><span class="spinner sm"></span> On it…</div>';
+  btn.disabled = true;
+  const shown = sh ? text + '\n📎 ' + (sh.image ? 'photo' : (sh.text || '').slice(0, 80)) : text;
+  try {
+    const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
+    const r = await api('chat.send', { message: text, shared, mode: 'quick' }, { timeoutMs: 120000 });
+    state.chat = state.chat || [];
+    state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, outfit: r.outfit });
+    saveCache();
+    if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
+    invalidate();
+    if (viaMic) speak(r.reply);
+    if ((r.actions || []).length && !r.asked && !r.outfit) showLogged(r);
+    else { res.innerHTML = ''; location.hash = '#chat'; }
+    refreshAll();
+  } catch (e) {
+    ta.value = text; res.innerHTML = '';
+    fail(e);
+  } finally { btn.disabled = false; }
+}
+function showLogged(r) {
+  const res = $('#qResult', quickEl);
+  const undos = r.actions.map(a => a.undo).filter(Boolean);
+  res.innerHTML = `<div class="logged">
+      ${r.actions.map(a => `<div class="lg-line">✓ ${esc(a.label)}</div>`).join('')}
+      <div class="btn-row" style="margin-top:6px">${undos.length ? '<button type="button" class="btn small" id="qUndo">Undo</button>' : ''}<button type="button" class="btn small ghost" id="qOpen">Open in chat</button></div>
+    </div>`;
+  const fade = () => { const el = $('.logged', res); if (!el) return; el.classList.add('fade'); setTimeout(() => { if (el.isConnected) el.remove(); }, 450); };
+  quickTimer = setTimeout(fade, 8000);
+  $('#qOpen', res).onclick = () => { clearTimeout(quickTimer); res.innerHTML = ''; location.hash = '#chat'; };
+  $('#qUndo', res)?.addEventListener('click', e => {
+    clearTimeout(quickTimer);
+    busy(e.currentTarget, async () => {
+      for (const k of undos) await api('undo', { key: k });
+      state.chat?.push({ role: 'assistant', content: '↩︎ Undone.' }); saveCache();
+      res.innerHTML = '<div class="logged">↩︎ Undone.</div>';
+      quickTimer = setTimeout(fade, 3000);
+      invalidate(); refreshAll();
+    }).catch(fail);
+  });
+}
+
+// Settings field: the language your phone listens for (saved on this phone only).
+function voiceLangField() {
+  const cur = lsGet('homebase.voiceLang', '');
+  return `<label class="field"><span>Voice language on this phone</span><select id="sVoiceLang">${VOICE_LANGS.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+}
+function bindVoiceLangField() {
+  $('#sVoiceLang')?.addEventListener('change', e => { lsSet('homebase.voiceLang', e.target.value); toast('Voice language saved on this phone.'); });
+}
+
+// ================= VOICE =================
+// Speech → text uses Chrome's speech recognition (audio goes to Google, like keyboard voice typing).
+// Replies are read aloud by the phone's own voice, only when you used the mic.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const VOICE_LANGS = [['', 'Same as this phone'], ['en-US', 'English'], ['zh-CN', '中文（普通话）'], ['zh-TW', '中文（台灣）'], ['zh-HK', '粵語']];
+function voiceLang() {
+  const v = lsGet('homebase.voiceLang', '');
+  return v || (navigator.language || 'en-US');
+}
+let activeRec = null;
+function dictate(textarea, btn, onDone) {
+  if (!SR) return toast("Voice input isn't available here. Open Homebase in Chrome, or use the mic on your keyboard.", true);
+  if (activeRec) { activeRec.stop(); return; }
+  try { speechSynthesis?.cancel(); } catch { /* nothing playing */ }
+  const rec = new SR();
+  rec.lang = voiceLang(); rec.interimResults = true; rec.continuous = false;
+  const base = textarea.value.trim() ? textarea.value.trim() + ' ' : '';
+  let heard = false;
+  rec.onresult = e => {
+    let txt = '';
+    for (const r of e.results) txt += r[0].transcript;
+    heard = !!txt.trim();
+    textarea.value = base + txt;
+    textarea.dispatchEvent(new Event('input'));
+  };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Allow the microphone for Homebase (Chrome → site settings → Microphone).', true);
+    else if (e.error !== 'no-speech' && e.error !== 'aborted') toast('Voice input stopped: ' + e.error, true);
+  };
+  rec.onend = () => { activeRec = null; btn.classList.remove('rec'); if (heard) onDone?.(); };
+  activeRec = rec;
+  btn.classList.add('rec');
+  try { rec.start(); } catch (e) { activeRec = null; btn.classList.remove('rec'); fail(e); }
+}
+function plainForSpeech(t) {
+  return String(t || '').replace(/\*\*|__|`|#+ /g, '').replace(/^\s*[-*•] /gm, '').replace(/https?:\/\/\S+/g, 'link').slice(0, 1200);
+}
+function speak(text) {
+  if (!('speechSynthesis' in window) || !text) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(plainForSpeech(text));
+    u.lang = /[\u4e00-\u9fff]/.test(text) ? (voiceLang().startsWith('zh') ? voiceLang() : 'zh-CN') : (voiceLang().startsWith('zh') ? 'en-US' : voiceLang());
+    speechSynthesis.speak(u);
+  } catch { /* no voice on this phone */ }
+}
+
 // ================= CHAT =================
 // --- sharing into Homebase (Android Share menu → service worker → here) ---
 const SHARE_PROMPT = 'Find the dates, events and to-dos in this and suggest what to add.';
@@ -1586,6 +1722,7 @@ async function renderChat() {
   composer.className = 'composer';
   composer.innerHTML = `<div id="shareChip" class="share-chip" hidden></div>
     <button type="button" class="attach" id="chatAttach" aria-label="Add a photo or screenshot">📎</button><input type="file" id="chatFile" accept="image/*" hidden>
+    ${SR ? '<button type="button" class="attach mic" id="chatMic" aria-label="Speak">🎤</button>' : ''}
     <textarea id="chatInput" rows="1" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
     <button class="btn primary" aria-label="Send">Send</button>`;
   document.body.appendChild(composer);
@@ -1609,7 +1746,7 @@ async function renderChat() {
   composer.addEventListener('submit', e => {
     e.preventDefault();
     const v = ta.value.trim() || (state.pendingShare ? SHARE_PROMPT : '');
-    if (v) { ta.value = ''; grow(); sendChat(v); }
+    if (v) { ta.value = ''; grow(); const m = chatMic; chatMic = false; sendChat(v, m); }
   });
   // something shared from another app (Android Share menu), or a photo picked with 📎
   const showShare = () => {
@@ -1624,6 +1761,7 @@ async function renderChat() {
     grow();
   };
   $('#chatAttach').onclick = () => $('#chatFile').click();
+  $('#chatMic')?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { chatMic = true; grow(); }));
   $('#chatFile').onchange = async e => {
     const f = e.target.files?.[0]; if (!f) return;
     try { state.pendingShare = { ...(state.pendingShare || {}), image: await shareImage(f) }; showShare(); } catch (err) { fail(err); }
@@ -1655,15 +1793,17 @@ function paintChat(loading = false) {
   const msgs = state.chat || [];
   list.innerHTML = (msgs.length ? '' : `<div class="empty"><div class="big">Hi! What's on your mind?</div>
       I know your tasks, calendar and the weather. You can also just tell me things you did.</div>`) +
-    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${m.outfit ? `<div class="chat-outfit">${outfitBody(m.outfit)}</div>` : ''}</div>`).join('') +
+    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${m.outfit ? `<div class="chat-outfit">${outfitBody(m.outfit)}</div>` : ''}${m.role === 'assistant' && !m.typing && m.content && 'speechSynthesis' in window ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
+  $$('[data-say]', list).forEach(b => b.onclick = () => speak((state.chat || [])[+b.dataset.say]?.content));
   if (isMember()) $$('.chat-chips .chip', list).forEach(c => { if (/email/i.test(c.textContent)) c.remove(); });
   requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
 }
 
 let chatBusy = false;
-async function sendChat(text) {
+let chatMic = false;
+async function sendChat(text, viaMic = false) {
   if (chatBusy) return toast('One moment…');
   chatBusy = true;
   state.chat = state.chat || [];
@@ -1677,6 +1817,7 @@ async function sendChat(text) {
     const r = await api('chat.send', { message: text, shared }, { timeoutMs: 120000 });
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: r.reply, outfit: r.outfit }); saveCache();
+    if (viaMic) speak(r.reply);
     if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
     invalidate(); // the assistant may have changed tasks, clothes or the calendar
   } catch (e) {
@@ -1805,7 +1946,8 @@ function paintMemberSettings() {
       <h2>You</h2>
       <div>Signed in as <b>${esc(state.me?.name || '')}</b>.</div>
       <div class="muted small" style="margin-top:6px">Tasks, the wardrobe and the family calendar are shared with the household. Your chat and your “Only me” tasks are private.</div>
-      <button class="btn small ghost" id="sSignOut" style="margin-top:10px">Sign out of this phone</button>
+      <div style="margin-top:12px">${voiceLangField()}</div>
+      <button class="btn small ghost" id="sSignOut">Sign out of this phone</button>
     </div>
     <div class="card">
       <h2>Notifications</h2>
@@ -1823,6 +1965,7 @@ function paintMemberSettings() {
     </div>
     <button class="btn primary block" id="sSave">Save</button>
     <div class="spacer"></div>`;
+  bindVoiceLangField();
   let channel = s.notify_channel === 'telegram' ? 'telegram' : 'ntfy';
   const paintChan = () => {
     $$('#sChan button').forEach(b => b.classList.toggle('on', b.dataset.v === channel));
@@ -1939,6 +2082,7 @@ function paintServerSettings() {
     </div>
     <div class="card">
       <h2>Assistant</h2>
+      ${voiceLangField()}
       <label class="field"><span>About your household (the AI uses this)</span>
         <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. I prefer comfortable, simple clothes.">${esc(s.about_me)}</textarea></label>
       <div class="field"><span>Watch these emails (blank = email reading off)</span>
@@ -2020,6 +2164,7 @@ function paintServerSettings() {
 
   paintFamily();
   $('#sInvite').onclick = openInvite;
+  bindVoiceLangField();
 
   api('usage').then(u => {
     const el = $('#sUsage'); if (!el) return;
