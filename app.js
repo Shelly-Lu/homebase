@@ -92,12 +92,20 @@ const state = {
 const isMember = () => state.me?.role === 'member';
 
 // Invite link from the owner: …#join=<base64 {u: backend url, c: invite code, n: name}>. Signs this phone in.
-(function handleJoin() {
-  const m = /^#join=([\w-]+)/.exec(location.hash || '');
-  if (!m) return;
+// Reads an invite link (or just the part after "#join="). Returns {u, c, n} or null.
+function parseInvite(text) {
+  const m = /#?join=([\w-]+)/.exec(String(text || '').trim());
+  if (!m) return null;
   try {
     const j = JSON.parse(decodeURIComponent(escape(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')))));
-    if (j.u && j.c) {
+    return j && j.u && j.c ? j : null;
+  } catch { return null; }
+}
+(function handleJoin() {
+  if (!/^#join=/.test(location.hash || '')) return;
+  try {
+    const j = parseInvite(location.hash);
+    if (j) {
       setCfg({ url: j.u, token: j.c });
       forgetLocalData();
       sessionStorage.setItem('homebase.welcome', j.n || 'there');
@@ -1687,6 +1695,8 @@ async function renderSettings() {
       <div class="muted small">Paste your Apps Script web app URL and the app token from <b>setup()</b>. See the README for the setup.<br>Joining your family's Homebase? Open the invite link you were sent instead.</div></div>`}
     <div class="card">
       <h2>Connection</h2>
+      ${configured ? '' : `<label class="field"><span>Got an invite link? Paste it here</span><input type="text" id="sInviteIn" placeholder="https://…#join=…" autocomplete="off"></label>
+      <div class="muted small" style="margin:-4px 0 12px">Or fill in the two boxes below.</div>`}
       <label class="field"><span>Backend URL (Apps Script web app)</span><input type="url" id="sUrl" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></label>
       <label class="field"><span>App token or invite code</span><input type="password" id="sToken" value="${esc(cfg.token || '')}"></label>
       <div class="btn-row"><button class="btn primary" id="sConnect">${configured ? 'Save & test' : 'Connect'}</button></div>
@@ -1694,6 +1704,9 @@ async function renderSettings() {
     </div>
     <div id="serverSettings">${configured ? '<div class="card"><div class="skeleton" style="height:200px"></div></div>' : ''}</div>`;
 
+  // Pasting a whole invite link into any box fills in both.
+  const fromInvite = el => { const j = parseInvite(el.value); if (j) { $('#sUrl').value = j.u; $('#sToken').value = j.c; if ($('#sInviteIn')) $('#sInviteIn').value = ''; toast(`Invite for ${j.n || 'you'} found. Tap Connect.`); } };
+  ['#sInviteIn', '#sUrl', '#sToken'].forEach(id => $(id)?.addEventListener('input', e => fromInvite(e.target)));
   $('#sConnect').onclick = e => busy(e.currentTarget, async () => {
     const url = $('#sUrl').value.trim(), token = $('#sToken').value.trim();
     if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) throw new Error('That does not look like an Apps Script web app URL.');
@@ -1726,7 +1739,9 @@ function showInviteLink(name, code) {
     <div class="muted small">Send it privately (a text or email). Opening it on their phone signs them in as ${esc(name)}. Anyone with the link can sign in as them, so if it ends up somewhere else, make a new link: the old one stops working.</div>
     <input type="text" readonly id="invLink" value="${esc(link)}" style="margin:10px 0">
     <div class="btn-row"><button class="btn primary" id="invShare">Share</button><button class="btn" id="invCopy">Copy</button><button class="btn ghost" id="invDone">Done</button></div>
-    <div class="muted small" style="margin-top:8px">On their phone: open the link in Chrome, then ⋮ → <b>Add to Home screen</b>.</div>`);
+    <div class="muted small" style="margin-top:8px">On their phone, open it in <b>Chrome</b> (not inside WeChat or another chat app: those use their own browser). Easiest: long-press the link → Copy, then paste it into Chrome's address bar, or into the "invite link" box on Homebase's first screen. Then ⋮ → <b>Add to Home screen</b>.</div>
+    <details class="why" style="margin-top:8px"><summary>Enter it by hand instead</summary>
+      <div class="small" style="margin-top:6px">Backend URL:<br><code style="word-break:break-all">${esc(getCfg().url)}</code><br>Invite code:<br><code style="word-break:break-all">${esc(code)}</code></div></details>`);
   $('#invCopy').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Copied.')).catch(() => { $('#invLink').select(); });
   $('#invShare').onclick = () => (navigator.share ? navigator.share({ title: 'Homebase', text: `Join our Homebase, ${name}:`, url: link }).catch(() => {}) : $('#invCopy').click());
   $('#invDone').onclick = closeModal;
