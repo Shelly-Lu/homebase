@@ -724,7 +724,9 @@ function mealRow(m) {
 
 function paintFood() {
   saveCache();
-  const all = state.meals || [];
+  const everything = state.meals || [];
+  const planned = everything.filter(m => m.status === 'planned');
+  const all = everything.filter(m => m.status !== 'planned');
   const ps = people();
   const f = state.ffilter;
   const list = f === 'all' ? all : all.filter(m => (m.people || []).includes(f));
@@ -742,6 +744,14 @@ function paintFood() {
         ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Pick your cuisines, then rate 30 dish photos (about a minute) so ideas fit from day one.</span></span><span aria-hidden="true">›</span></button>`
         : `<button type="button" class="btn small ghost" id="fTaste" style="margin-top:8px">Taste quiz · ${state.taste[myPersonId()]} rated</button>`}
     </div>
+    ${planned.length ? `<div class="section-title">Up next<span>${planned.length}</span></div><div class="card meal-list up-next">${planned.map(m => `
+      <div class="next-row" data-next="${esc(m.id)}">
+        <span class="idea-i">${m.source === 'homemade' ? '🏠' : m.source === 'takeout' ? '🥡' : '🍽️'}</span>
+        <span class="grow"><b>${esc(m.name)}</b><span class="muted small">${esc([mealLabel(m.meal), m.place, rel(m.date) === 'today' ? '' : 'picked ' + rel(m.date)].filter(Boolean).join(' · '))}</span></span>
+        <button type="button" class="btn small primary" data-ate="${esc(m.id)}" aria-label="I ate it">✓ Ate it</button>
+        <button type="button" class="icon-mini" data-snap="${esc(m.id)}" aria-label="Add a photo">📷</button>
+        <button type="button" class="icon-mini" data-drop="${esc(m.id)}" aria-label="Remove">✕</button>
+      </div>`).join('')}</div>` : ''}
     ${ps.length > 1 ? `<div class="fchips" id="fFilter"><button data-f="all" class="${f === 'all' ? 'on' : ''}">Everyone</button>${ps.map(p => `<button data-f="${esc(p.id)}" class="${f === p.id ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>` : ''}
     ${weekSummary(list) ? `<div class="muted small food-week">${esc(weekSummary(list))}</div>` : ''}
     ${days.length ? days.map(d => `<div class="section-title">${esc(dayTitle(d.date))}<span>${d.items.length}</span></div><div class="card meal-list">${d.items.map(mealRow).join('')}</div>`).join('')
@@ -753,6 +763,17 @@ function paintFood() {
   $$('#fFilter [data-f]').forEach(b => b.onclick = () => { state.ffilter = b.dataset.f; paintFood(); });
   $('#fMore')?.addEventListener('click', () => { state.fshow += 60; paintFood(); });
   $$('[data-meal]', view).forEach(b => b.onclick = () => { const m = (state.meals || []).find(x => x.id === b.dataset.meal); if (m) openMealEditor(m); });
+  const byId = id => (state.meals || []).find(x => x.id === id);
+  $$('[data-ate]', view).forEach(b => b.onclick = () => busy(b, async () => {
+    const saved = await api('meals.save', { id: b.dataset.ate, status: '', date: todayStr(), time: nowHHMM() });
+    upsertMeal(saved);
+    toast(`Logged ${mealLabel(saved.meal).toLowerCase()}. Tap it to add a photo or fix details.`);
+  }).catch(fail));
+  $$('[data-snap]', view).forEach(b => b.onclick = () => { const m = byId(b.dataset.snap); if (m) openMealEditor(m, null, { capture: true }); });
+  $$('[data-drop]', view).forEach(b => b.onclick = () => busy(b, async () => {
+    const m = byId(b.dataset.drop); await api('meals.delete', { id: b.dataset.drop }); if (m) upsertMeal(m, true);
+  }).catch(fail));
+  $$('[data-next] .grow', view).forEach(el => el.onclick = () => { const m = byId(el.closest('[data-next]').dataset.next); if (m) openMealEditor(m); });
   ensurePhotos();
 }
 
@@ -767,11 +788,12 @@ function upsertMeal(m, removed) {
 // --- add / edit a meal ---
 // Stage 1 (new meal): food photo, optional receipt, a note, who ate → "Read it" (AI) or fill in by hand.
 // Stage 2: the form (pre-filled by the AI), then Save.
-function openMealEditor(meal, prefill) {
+function openMealEditor(meal, prefill, opts = {}) {
   const draft = { photo: null, receipt: null, people: meal?.people || prefill?.people || [myPersonId()], taken: null };
-  if (meal || prefill) return mealForm(meal, prefill || {}, draft);
+  if ((meal || prefill) && !opts.capture) return mealForm(meal, prefill || {}, draft);
+  const target = opts.capture ? meal : null;
   const ps = people();
-  openModal(`<h3>Add a meal</h3>
+  openModal(`<h3>${target ? esc(target.name) : 'Add a meal'}</h3>
     <div class="snap-row">
       <label class="snap" id="snapFood"><input type="file" accept="image/*" id="mPhoto" hidden><span class="ph snap-ph" id="mPhotoPh"><span class="ph-i">📷</span></span><span class="small">Food photo</span></label>
       <label class="snap" id="snapRcpt"><input type="file" accept="image/*" id="mRcpt" hidden><span class="ph snap-ph" id="mRcptPh"><span class="ph-i">🧾</span></span><span class="small">Receipt <span class="muted">(optional)</span></span></label>
@@ -795,7 +817,7 @@ function openMealEditor(meal, prefill) {
     b.classList.toggle('on');
     draft.people = $$('#mWho [data-p].on').map(x => x.dataset.p);
   });
-  $('#mByHand').onclick = () => mealForm(null, { note: $('#mHint').value.trim() }, draft);
+  $('#mByHand').onclick = () => mealForm(target, { note: $('#mHint').value.trim() || undefined }, draft);
   $('#mRead').onclick = e => {
     const hint = $('#mHint').value.trim();
     if (!draft.photo && !draft.receipt && !hint) return toast('Add a photo, a receipt or a few words first.', true);
@@ -805,9 +827,9 @@ function openMealEditor(meal, prefill) {
       const r = await api('meals.analyze', {
         photo: draft.photo ? { data: draft.photo.data, mime: draft.photo.mime } : undefined,
         receipt: draft.receipt ? { data: draft.receipt.data, mime: draft.receipt.mime } : undefined,
-        hint, date: dayOf(t), time: nowHHMM(t), people: draft.people
+        hint: [target ? 'Planned: ' + target.name + (target.place ? ' at ' + target.place : '') : '', hint].filter(Boolean).join('. '), date: dayOf(t), time: nowHHMM(t), people: draft.people
       }, { timeoutMs: 90000 });
-      mealForm(null, { ...r, note: hint, ai: true }, draft);
+      mealForm(target, { ...r, note: hint || undefined, ai: true }, draft);
     }).catch(fail);
   };
 }
@@ -817,16 +839,21 @@ function mealForm(meal, pre, draft) {
   const v = k => (pre[k] !== undefined ? pre[k] : m[k]);
   const ps = people();
   const t = draft.taken || new Date();
+  const wasPlanned = m.status === 'planned';
+  if (wasPlanned && pre.date === undefined) { pre = { ...pre, date: dayOf(t), time: pre.time || nowHHMM(t) }; }
   const val = {
     meal: v('meal') || mealByTime(v('time') || nowHHMM(t)), source: v('source') || 'homemade',
     tags: [...(v('tags') || [])], rating: v('rating') === undefined || v('rating') === null ? '' : v('rating'),
     people: [...(meal ? m.people || [] : draft.people)]
   };
   const photoSrc = draft.photo?.url;
-  openModal(`<h3>${meal ? 'Meal' : 'Check and save'}</h3>
+  openModal(`<h3>${wasPlanned ? 'Ate it? Check and save' : meal ? 'Meal' : 'Check and save'}</h3>
     ${photoSrc || m.photo_id || m.receipt_id ? `<div class="meal-photos">${photoSrc ? `<span class="ph meal-big has" style="background-image:url('${photoSrc}')"></span>` : m.photo_id ? `<span class="ph meal-big" data-photo="${esc(m.photo_id)}"><span class="ph-i">${mealIcon(m.meal)}</span></span>` : ''}
       ${draft.receipt?.url ? `<span class="ph meal-rc has" style="background-image:url('${draft.receipt.url}')"></span>` : m.receipt_id ? `<span class="ph meal-rc" data-photo="${esc(m.receipt_id)}"><span class="ph-i">🧾</span></span>` : ''}</div>` : ''}
-    ${meal ? `<label class="snap-inline small"><input type="file" accept="image/*" id="fNewPhoto" hidden>${m.photo_id ? 'Change photo' : '📷 Add a photo'}</label>` : ''}
+    <div class="snap-links">
+      ${meal || !draft.photo ? `<label class="snap-inline small"><input type="file" accept="image/*" id="fNewPhoto" hidden>📷 ${m.photo_id || draft.photo ? 'Change photo' : 'Add a photo'}</label>` : ''}
+      ${!draft.receipt ? `<label class="snap-inline small"><input type="file" accept="image/*" id="fNewRcpt" hidden>🧾 ${m.receipt_id ? 'Change receipt' : 'Add a receipt'}</label>` : ''}
+    </div>
     <label class="field"><span>What was it</span><input type="text" id="fName" value="${esc(v('name') || '')}" maxlength="80" placeholder="e.g. Beef pho with spring rolls"></label>
     <div class="field"><span>Meal</span><div class="fchips wrap" id="fMeal">${MEALS.map(([k, l, i]) => `<button type="button" data-v="${k}" class="${val.meal === k ? 'on' : ''}">${i} ${l}</button>`).join('')}</div></div>
     <div class="field"><span>From</span><div class="seg" id="fSource">${SOURCES.map(([k, l]) => `<button type="button" data-v="${k}" class="${val.source === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -870,6 +897,23 @@ function mealForm(meal, pre, draft) {
     const file = e.target.files?.[0]; if (!file) return;
     try { newPhoto = await shrinkImage(file, PHOTO_MAX); toast('Photo will be saved with the meal.'); } catch (err) { fail(err); }
   });
+  // a receipt added here is read right away: place, price, date and time fill in (what you typed stays)
+  $('#fNewRcpt')?.addEventListener('change', async e => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const lab = e.target.closest('label');
+    try {
+      draft.receipt = await shrinkImage(file, RECEIPT_MAX, 0.8);
+      lab.lastChild.textContent = ' Reading the receipt…';
+      const r = await api('meals.analyze', { receipt: { data: draft.receipt.data, mime: draft.receipt.mime }, hint: 'Meal: ' + ($('#fName').value.trim() || m.name || ''), people: val.people }, { timeoutMs: 90000 });
+      if ($('#modal').hidden) return;
+      if (r.place && !$('#fPlace').value.trim()) $('#fPlace').value = r.place;
+      if (r.price) $('#fPrice').value = r.price;
+      if (r.place && val.source === 'homemade') { $$('#fSource [data-v]').forEach(x => x.classList.toggle('on', x.dataset.v === 'restaurant')); val.source = 'restaurant'; placeRow(); }
+      if (r.date && r.date !== todayStr()) $('#fDate').value = r.date;
+      if (r.time && !$('#fTime').value) $('#fTime').value = r.time;
+      lab.lastChild.textContent = ' Receipt added ✓';
+    } catch (err) { lab.lastChild.textContent = ' Receipt added (couldn\'t read it)'; console.warn(err); }
+  });
   $('#fSave').onclick = e => busy(e.currentTarget, async () => {
     const name = $('#fName').value.trim();
     if (!name) throw new Error('Give it a name.');
@@ -878,20 +922,47 @@ function mealForm(meal, pre, draft) {
       id: meal?.id, name, meal: val.meal, source: val.source, place: $('#fPlace').value.trim(), cuisine: $('#fCuisine').value.trim(),
       date: $('#fDate').value || todayStr(), time: $('#fTime').value, people: val.people.length ? val.people : [myPersonId()],
       calories: $('#fKcal').value, protein_g: $('#fProt').value, price: $('#fPrice').value, ingredients: $('#fIng').value,
-      tags: val.tags, rating: val.rating, note: $('#fNote').value.trim(), ai: !!pre.ai,
+      tags: val.tags, rating: val.rating, note: $('#fNote').value.trim(), ai: !!pre.ai, status: '',
       photo: photo ? { data: photo.data, mime: photo.mime } : undefined,
-      receipt: !meal && draft.receipt ? { data: draft.receipt.data, mime: draft.receipt.mime } : undefined
+      receipt: draft.receipt ? { data: draft.receipt.data, mime: draft.receipt.mime } : undefined
     }, { timeoutMs: 60000 });
     if (photo && saved.photo_id) { photoMem.set(saved.photo_id, photo.url); idbPut(saved.photo_id, photo.url); }
-    if (!meal && draft.receipt && saved.receipt_id) { photoMem.set(saved.receipt_id, draft.receipt.url); idbPut(saved.receipt_id, draft.receipt.url); }
+    if (draft.receipt && saved.receipt_id) { photoMem.set(saved.receipt_id, draft.receipt.url); idbPut(saved.receipt_id, draft.receipt.url); }
     closeModal();
     upsertMeal(saved);
-    toast(meal ? 'Saved.' : `Logged ${mealLabel(saved.meal).toLowerCase()}.`);
+    toast(meal && !wasPlanned ? 'Saved.' : `Logged ${mealLabel(saved.meal).toLowerCase()}.`);
   }).catch(fail);
   $('#fDel')?.addEventListener('click', e => {
     if (!confirm(`Delete "${m.name}"?`)) return;
     busy(e.currentTarget, async () => { await api('meals.delete', { id: m.id }); closeModal(); upsertMeal(m, true); }).catch(fail);
   });
+}
+
+// --- Recipes: from TheMealDB (quiz dishes and matching ideas) or written by the AI for "cook at home" ideas ---
+async function openRecipe(q) {
+  document.getElementById('recipeSheet')?.remove();
+  const el = document.createElement('div');
+  el.id = 'recipeSheet'; el.className = 'recipe-sheet';
+  el.innerHTML = `<div class="recipe-card" role="dialog" aria-modal="true"><button type="button" class="recipe-x" aria-label="Close">✕</button>
+    <div class="guess-wait"><span class="spinner"></span><div class="muted small">${q.dish_id ? 'Getting the recipe…' : 'Writing a recipe…'}</div></div></div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  el.addEventListener('click', e => { if (e.target === el || e.target.closest('.recipe-x')) close(); });
+  let r;
+  try { r = await api('recipe.get', q, { timeoutMs: 90000 }); }
+  catch (e) { close(); return fail(e); }
+  if (!el.isConnected) return;
+  const meta = [r.area, r.category, r.time, r.servings ? `serves ${r.servings}` : ''].filter(Boolean).join(' · ');
+  el.querySelector('.recipe-card').innerHTML = `<button type="button" class="recipe-x" aria-label="Close">✕</button>
+    ${r.thumb ? `<img class="recipe-img" alt="" src="${esc(r.thumb + '/medium')}" onerror="this.onerror=null;this.src='${esc(r.thumb)}'">` : ''}
+    <h3>${esc(r.name)}</h3>${meta ? `<div class="muted small">${esc(meta)}</div>` : ''}
+    <div class="section-title" style="margin-left:0">Ingredients<span>${r.ingredients.length}</span></div>
+    <ul class="recipe-ing">${r.ingredients.map(x => `<li><b>${esc(x.amount || '')}</b> ${esc(x.item)}</li>`).join('')}</ul>
+    <div class="section-title" style="margin-left:0">Steps</div>
+    <ol class="recipe-steps">${r.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
+    ${r.tips ? `<p class="tips">${esc(r.tips)}</p>` : ''}
+    <div class="recipe-links">${r.youtube ? `<a href="${esc(r.youtube)}" target="_blank" rel="noopener">▶ Video</a>` : ''}${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">Original recipe</a>` : ''}</div>
+    <div class="muted tiny" style="text-align:left">${r.source === 'ai' ? 'Written by AI for your household. Double-check allergies and cooking times.' : 'Recipe and photo: <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>'}</div>`;
 }
 
 // --- Taste quiz: rate dish photos (from TheMealDB) so ideas fit from day one ---
@@ -963,6 +1034,7 @@ async function runTasteQuiz(person, areas, spice, size) {
         <div class="quiz-name">${esc(m.name)}</div>
         <div class="muted small">${esc([m.area, m.category].filter(Boolean).join(' · '))}</div>
       </div>
+      <div style="text-align:center"><button type="button" class="linkish" id="qzRecipe">📖 Recipe</button></div>
       <div class="quiz-btns">
         <button type="button" class="btn" data-a="-1"><span>🙅</span>Not for me</button>
         <button type="button" class="btn" data-a="0"><span>🙂</span>It's OK</button>
@@ -981,6 +1053,7 @@ async function runTasteQuiz(person, areas, spice, size) {
     };
     $$('.quiz-btns [data-a]').forEach(b => b.onclick = () => answer(Number(b.dataset.a)));
     $('#qzSkip').onclick = () => { i++; paint(); };
+    $('#qzRecipe').onclick = () => openRecipe({ dish_id: m.id });
     $('#qzDone').onclick = () => {
       tasteFlush().then(() => { if (location.hash === '#food' && $('#modal').hidden) paintFood(); });
       closeModal(); toast(rated ? `Saved ${rated} answer${rated > 1 ? 's' : ''}.` : 'See you next time.');
@@ -1056,7 +1129,8 @@ async function runGuess(a, seen) {
       ${x.last ? `<div class="idea-last small">Last time: ${esc(x.last.name)}${x.last.place ? ' at ' + esc(x.last.place) : ''} · ${esc(rel(x.last.date))}${x.last.price ? ' · $' + esc(Number(x.last.price).toFixed(2)) : ''}${x.last.rating === 1 ? ' · ♥' : ''}
         ${x.last.receipt_id ? `<button type="button" class="linkish rc-btn" data-rc="${esc(x.last.receipt_id)}">🧾 Receipt</button>` : ''}</div>` : ''}
       ${x.photo_url && x.photo_of ? `<div class="tiny" style="text-align:left">Photo: ${esc(x.photo_of)} · TheMealDB</div>` : ''}
-      <button type="button" class="btn small" data-pick="${i}">I'll have this</button>
+      <div class="btn-row idea-btns"><button type="button" class="btn small" data-pick="${i}">I'll have this</button>
+        ${x.dish_id || x.where === 'home' ? `<button type="button" class="btn small ghost" data-recipe="${i}">📖 Recipe</button>` : ''}</div>
     </div>`).join('') || '<div class="muted">No ideas came back. Try again.</div>'}
     <div class="btn-row" style="margin-top:6px"><button class="btn" id="gMore">Other ideas</button><button class="btn ghost" id="gBack">Change answers</button></div>`);
   ensurePhotos();
@@ -1067,12 +1141,20 @@ async function runGuess(a, seen) {
     box.insertAdjacentHTML('beforeend', `<span class="ph rc-view" data-photo="${esc(b.dataset.rc)}"><span class="ph-i">🧾</span></span>`);
     ensurePhotos();
   });
-  $$('[data-pick]').forEach(b => b.onclick = () => {
-    const x = ideas[+b.dataset.pick];
-    openMealEditor(null, { name: x.title, meal: r.meal || a.meal, source: x.where === 'home' ? 'homemade' : x.where === 'takeout' ? 'takeout' : 'restaurant',
-      place: x.place, cuisine: x.cuisine, ingredients: x.ingredients, tags: x.tags, calories: x.est_calories, people: r.people || a.people, date: todayStr(), time: nowHHMM() });
-    toast('Tap Save when you eat it.');
+  $$('[data-recipe]').forEach(b => b.onclick = () => {
+    const x = ideas[+b.dataset.recipe];
+    openRecipe(x.dish_id ? { dish_id: x.dish_id } : { title: x.title, cuisine: x.cuisine, ingredients: x.ingredients, people: r.people || a.people });
   });
+  $$('[data-pick]').forEach(b => b.onclick = () => busy(b, async () => {
+    const x = ideas[+b.dataset.pick];
+    const saved = await api('meals.save', { name: x.title, meal: r.meal || a.meal, source: x.where === 'home' ? 'homemade' : x.where === 'takeout' ? 'takeout' : 'restaurant',
+      place: x.place, cuisine: x.cuisine, ingredients: x.ingredients, tags: x.tags, calories: x.est_calories, people: r.people || a.people,
+      date: todayStr(), time: '', status: 'planned', ai: true });
+    upsertMeal(saved);
+    closeModal();
+    if (location.hash !== '#food') location.hash = '#food';
+    toast('Saved under "Up next". Tap ✓ Ate it when you\'ve had it.');
+  }).catch(fail));
   $('#gMore').onclick = () => runGuess(a, [...seen, ...ideas.map(x => x.title)].slice(-12));
   $('#gBack').onclick = () => openGuess(a);
 }
