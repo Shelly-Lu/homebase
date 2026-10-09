@@ -1743,13 +1743,88 @@ function showLogged(r) {
   });
 }
 
-// Settings field: the language your phone listens for (saved on this phone only).
-function voiceLangField() {
+// Settings card: how this phone listens and reads replies aloud (saved on this phone only).
+function voiceCardHtml() {
   const cur = lsGet('homebase.voiceLang', '');
-  return `<label class="field"><span>Voice language on this phone</span><select id="sVoiceLang">${VOICE_LANGS.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  const rate = Number(lsGet('homebase.voiceRate', '1')) || 1;
+  return `<div class="card" id="voiceCard">
+      <h2>Voice (this phone)</h2>
+      <label class="field"><span>I speak</span><select id="sVoiceLang">${VOICE_LANGS.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field"><span>Reading voice</span><select id="sVoiceName"></select></label>
+      <label class="field"><span>Speed <b id="sRateVal">${rate.toFixed(1)}×</b></span><input type="range" id="sVoiceRate" min="0.7" max="1.5" step="0.1" value="${rate}"></label>
+      <div class="row"><button type="button" class="btn small" id="sVoiceTest">▶ Test</button>
+        <span class="muted small grow">“Online” voices sound most natural. For more, install voices in Android Settings → Text-to-speech.</span></div>
+    </div>`;
 }
-function bindVoiceLangField() {
-  $('#sVoiceLang')?.addEventListener('change', e => { lsSet('homebase.voiceLang', e.target.value); toast('Voice language saved on this phone.'); });
+const langFamily = l => String(l || '').replace('_', '-').slice(0, 2).toLowerCase();
+function allVoices() {
+  try { return ('speechSynthesis' in window ? speechSynthesis.getVoices() : []) || []; } catch { return []; }
+}
+function voiceLabel(v) {
+  return `${v.name.replace(/\s*\((?:[^)]*)\)\s*$/, '')} · ${String(v.lang).replace('_', '-')} · ${v.localService === false ? 'online' : 'on phone'}`;
+}
+// The voice to read with: your pick for that language, else an online voice for it, else any match.
+function pickVoice(lang) {
+  const fam = langFamily(lang), vs = allVoices();
+  if (!vs.length) return null;
+  const saved = lsGet('homebase.voiceName.' + fam, '');
+  const norm = l => String(l || '').replace('_', '-').toLowerCase();
+  const exact = vs.filter(v => norm(v.lang) === norm(lang)), fams = vs.filter(v => langFamily(v.lang) === fam);
+  return (saved && vs.find(v => v.name === saved && langFamily(v.lang) === fam))
+    || exact.find(v => v.localService === false) || exact.find(v => v.default) || exact[0]
+    || fams.find(v => v.localService === false) || fams[0] || null;
+}
+function sampleLine(lang) {
+  return langFamily(lang) === 'zh' ? (lang === 'zh-HK' ? '你好，我係 Homebase。今日記得帶遮。' : '你好，我是 Homebase。今天记得带伞。')
+    : "Hi, I'm Homebase. Don't forget your umbrella today.";
+}
+function bindVoiceCard() {
+  const sel = $('#sVoiceName'); if (!sel) return;
+  const fill = () => {
+    const lang = voiceLang(), fam = langFamily(lang);
+    const vs = allVoices().filter(v => langFamily(v.lang) === fam)
+      .sort((a, b) => (a.localService === false ? 0 : 1) - (b.localService === false ? 0 : 1) || a.name.localeCompare(b.name));
+    const saved = lsGet('homebase.voiceName.' + fam, '');
+    sel.innerHTML = `<option value="">Automatic (best available)</option>` +
+      vs.map(v => `<option value="${esc(v.name)}" ${v.name === saved ? 'selected' : ''}>${esc(voiceLabel(v))}</option>`).join('');
+    sel.disabled = !vs.length;
+    if (!vs.length) sel.innerHTML = `<option value="">${'speechSynthesis' in window ? 'Loading voices…' : 'No voices on this browser'}</option>`;
+  };
+  fill();
+  try { speechSynthesis.addEventListener('voiceschanged', fill); } catch { /* old browser */ }
+  setTimeout(fill, 700);
+  $('#sVoiceLang').addEventListener('change', e => { lsSet('homebase.voiceLang', e.target.value); fill(); toast('Saved on this phone.'); });
+  sel.addEventListener('change', () => { lsSet('homebase.voiceName.' + langFamily(voiceLang()), sel.value); speak(sampleLine(voiceLang())); });
+  $('#sVoiceRate').addEventListener('input', e => { lsSet('homebase.voiceRate', e.target.value); $('#sRateVal').textContent = Number(e.target.value).toFixed(1) + '×'; });
+  $('#sVoiceRate').addEventListener('change', () => speak(sampleLine(voiceLang())));
+  $('#sVoiceTest').onclick = () => {
+    if (!('speechSynthesis' in window)) return toast("This browser can't read aloud.", true);
+    speak(sampleLine(voiceLang()));
+  };
+}
+
+// Settings sections fold up: tap a heading to open it. Open ones are remembered on this phone.
+function foldCards(root, openByDefault = []) {
+  let open; try { open = JSON.parse(lsGet('homebase.openCards', '[]')) || []; } catch { open = []; }
+  root.querySelectorAll(':scope > .card, :scope > div > .card').forEach(card => {
+    const h = card.querySelector(':scope > h2');
+    if (!h || card.dataset.fold) return;
+    const key = h.textContent.trim();
+    card.dataset.fold = key;
+    card.classList.add('fold-card');
+    h.setAttribute('role', 'button'); h.tabIndex = 0;
+    const set = on => { card.classList.toggle('collapsed', !on); h.setAttribute('aria-expanded', String(on)); };
+    set(open.includes(key) || openByDefault.includes(key));
+    const toggle = () => {
+      const on = card.classList.contains('collapsed');
+      set(on);
+      try { open = JSON.parse(lsGet('homebase.openCards', '[]')) || []; } catch { open = []; }
+      open = open.filter(k => k !== key); if (on) open.push(key);
+      lsSet('homebase.openCards', JSON.stringify(open));
+    };
+    h.addEventListener('click', toggle);
+    h.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  });
 }
 
 // ================= VOICE =================
@@ -1795,6 +1870,9 @@ function speak(text) {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(plainForSpeech(text));
     u.lang = /[\u4e00-\u9fff]/.test(text) ? (voiceLang().startsWith('zh') ? voiceLang() : 'zh-CN') : (voiceLang().startsWith('zh') ? 'en-US' : voiceLang());
+    const v = pickVoice(u.lang);
+    if (v) { u.voice = v; u.lang = String(v.lang).replace('_', '-'); }
+    u.rate = Number(lsGet('homebase.voiceRate', '1')) || 1;
     speechSynthesis.speak(u);
   } catch { /* no voice on this phone */ }
 }
@@ -1958,6 +2036,7 @@ async function renderSettings() {
     <div id="serverSettings">${configured ? '<div class="card"><div class="skeleton" style="height:200px"></div></div>' : ''}</div>`;
 
   // Pasting a whole invite link into any box fills in both.
+  foldCards(view, configured ? [] : ['Connection']);
   const fromInvite = el => { const j = parseInvite(el.value); if (j) { $('#sUrl').value = j.u; $('#sToken').value = j.c; if ($('#sInviteIn')) $('#sInviteIn').value = ''; toast(`Invite for ${j.n || 'you'} found. Tap Connect.`); } };
   ['#sInviteIn', '#sUrl', '#sToken'].forEach(id => $(id)?.addEventListener('input', e => fromInvite(e.target)));
   $('#sConnect').onclick = e => busy(e.currentTarget, async () => {
@@ -2058,9 +2137,9 @@ function paintMemberSettings() {
       <h2>You</h2>
       <div>Signed in as <b>${esc(state.me?.name || '')}</b>.</div>
       <div class="muted small" style="margin-top:6px">Tasks, the wardrobe and the family calendar are shared with the household. Your chat and your “Only me” tasks are private.</div>
-      <div style="margin-top:12px">${voiceLangField()}</div>
-      <button class="btn small ghost" id="sSignOut">Sign out of this phone</button>
+      <button class="btn small ghost" id="sSignOut" style="margin-top:10px">Sign out of this phone</button>
     </div>
+    ${voiceCardHtml()}
     <div class="card">
       <h2>Notifications</h2>
       <label class="field"><span>Send my notifications with</span>
@@ -2077,7 +2156,8 @@ function paintMemberSettings() {
     </div>
     <button class="btn primary block" id="sSave">Save</button>
     <div class="spacer"></div>`;
-  bindVoiceLangField();
+  bindVoiceCard();
+  foldCards($('#serverSettings'), ['You']);
   let channel = s.notify_channel === 'telegram' ? 'telegram' : 'ntfy';
   const paintChan = () => {
     $$('#sChan button').forEach(b => b.classList.toggle('on', b.dataset.v === channel));
@@ -2192,9 +2272,9 @@ function paintServerSettings() {
       <label class="field"><span>Tomorrow's outfits for everyone (made each night, with a collage in the app)</span><select id="sLooks">${hourOpts(s.looks_hour === undefined ? '21' : s.looks_hour, true)}</select></label>
       <button class="btn small" id="sTestN">Send test notification</button>
     </div>
+    ${voiceCardHtml()}
     <div class="card">
       <h2>Assistant</h2>
-      ${voiceLangField()}
       <label class="field"><span>About your household (the AI uses this)</span>
         <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. I prefer comfortable, simple clothes.">${esc(s.about_me)}</textarea></label>
       <div class="field"><span>Watch these emails (blank = email reading off)</span>
@@ -2276,7 +2356,8 @@ function paintServerSettings() {
 
   paintFamily();
   $('#sInvite').onclick = openInvite;
-  bindVoiceLangField();
+  bindVoiceCard();
+  foldCards($('#serverSettings'));
 
   api('usage').then(u => {
     const el = $('#sUsage'); if (!el) return;

@@ -343,3 +343,11 @@ details.later > summary { list-style: none; display: flex; align-items: baseline
 details.later > summary::-webkit-details-marker { display: none; }
 details.later > summary::after { content: '▾'; margin-left: 8px; color: var(--ink-3); }
 details.later[open] > summary::after { content: '▴'; }
+
+/* Settings sections that fold: tap the heading */
+.fold-card > h2 { cursor: pointer; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; user-select: none; -webkit-tap-highlight-color: transparent; }
+.fold-card > h2::after { content: ''; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); opacity: .5; transition: transform .15s; margin: 0 4px 4px 0; }
+.fold-card.collapsed > h2 { margin-bottom: 0; }
+.fold-card.collapsed > h2::after { transform: rotate(-45deg); margin: 0 6px 0 0; }
+.fold-card.collapsed > :not(h2) { display: none !important; }
+#sVoiceRate { width: 100%; accent-color: var(--accent, currentColor); }
