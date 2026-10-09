@@ -1,7 +1,7 @@
 {
   "name": "Homebase",
   "short_name": "Homebase",
-  "description": "Reminders, what to wear, and a chat that knows your home.",
+  "description": "Reminders, what to eat, and a chat that knows your home.",
   "start_url": "./#today",
   "scope": "./",
   "display": "standalone",

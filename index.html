@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f5f1ea" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#161513" media="(prefers-color-scheme: dark)">
-  <meta name="description" content="Personal assistant: reminders, what to wear, and a chat that knows your home.">
+  <meta name="description" content="Family assistant: reminders, what to eat, and a chat that knows your home.">
   <title>Homebase</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
@@ -29,9 +29,9 @@
     <a href="#chat" data-tab="chat">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>
       <span>Chat</span></a>
-    <a href="#wardrobe" data-tab="wardrobe">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7a2.2 2.2 0 1 0-2.2-2.2"/><path d="M12 7v2l8.5 5.6a1.6 1.6 0 0 1-.9 2.9H4.4a1.6 1.6 0 0 1-.9-2.9L12 9"/></svg>
-      <span>Wardrobe</span></a>
+    <a href="#food" data-tab="food">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8"/><path d="M4.5 3v5a2.5 2.5 0 0 0 5 0V3"/><path d="M7 11v10"/><path d="M17 21V3c-2.2 1.2-3.5 3.6-3.5 7v3.5H17"/></svg>
+      <span>Food</span></a>
     <a href="#tasks" data-tab="tasks">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
       <span>Tasks</span></a>
@@ -72,11 +72,6 @@
         Promise.all(p).finally(function () { location.replace(location.pathname + '?r=' + Date.now() + '#today'); });
       };
     })();
-  </script>
-  <script type="importmap">
-  {"imports":{
-    "onnxruntime-web":"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.bundle.min.mjs",
-    "onnxruntime-web/webgpu":"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.webgpu.bundle.min.mjs"}}
   </script>
   <script type="module" src="app.js"></script>
 </body>

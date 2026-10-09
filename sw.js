@@ -1,9 +1,9 @@
 // Service worker: the app's own files are served from the phone straight away (instant start, works offline),
 // and a fresh copy is fetched in the background, so an update shows up the next time the app is opened.
-const VERSION = 'homebase-v30';
+const VERSION = 'homebase-v32';
 const SHARE_CACHE = 'homebase-share';   // things shared into Homebase wait here until the app picks them up
 const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './manifest.webmanifest',
-  './icon-192.png', './icon-512.png'];
+  './icon-192.png', './icon-512.png', './charts.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

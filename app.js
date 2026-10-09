@@ -85,7 +85,7 @@ const FRESH_MS = 60 * 1000;
 const cached = loadSaved(CACHE_KEY) || {};
 const state = {
   today: cached.today || loadSaved('homebase.today'),
-  tasks: cached.tasks || null, wardrobe: cached.wardrobe || null, looks: cached.looks || null, journal: cached.journal || null,
+  tasks: cached.tasks || null, meals: cached.meals || null, journal: cached.journal || null,
   chat: cached.chat || null, settings: null, fetchedAt: {},
   me: cached.me || null          // {id, name, role: 'owner'|'member', person_id}
 };
@@ -116,14 +116,14 @@ function parseInvite(text) {
 // Clears everything saved on this phone for the previous person (used when signing in as someone else).
 function forgetLocalData() {
   try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('homebase.today'); localStorage.removeItem('homebase.person'); } catch { /* ignore */ }
-  state.today = state.tasks = state.wardrobe = state.looks = state.chat = state.me = state.journal = null;
+  state.today = state.tasks = state.meals = state.chat = state.me = state.journal = null;
   state.fetchedAt = {}; state.chatFresh = false;
 }
 let saveTimer = null;
 function saveCache() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, meals: (state.meals || []).slice(0, 150), journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
     catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
   }, 250);
 }
@@ -146,8 +146,8 @@ async function fetchAll() {
   catch (e) {
     if (!/Unknown action/.test(e.message)) throw e;
     // older backend without "boot": ask tab by tab
-    const [today, tasks, wardrobe] = await Promise.all([api('today'), api('tasks.list'), api('wardrobe.list').catch(() => null)]);
-    return { today, tasks, wardrobe };
+    const [today, tasks, meals] = await Promise.all([api('today'), api('tasks.list'), api('meals.list', { days: 60 }).catch(() => null)]);
+    return { today, tasks, meals };
   }
 }
 function refreshAll() {
@@ -158,18 +158,14 @@ function refreshAll() {
     state.today = b.today;
     if (b.me) {
       state.me = b.me;
-      // first time on this phone: show this person's own wardrobe
-      if (!lsGet('homebase.person', '') && b.me.person_id) setPerson(b.me.person_id);
       const hi = sessionStorage.getItem('homebase.welcome');
       if (hi) { sessionStorage.removeItem('homebase.welcome'); toast(`Welcome, ${b.me.name}! You're signed in.`); }
     }
     if (b.family !== undefined && b.family !== null) state.familyCount = b.family;
     if (b.tasks) state.tasks = b.tasks;
-    if (b.wardrobe) state.wardrobe = b.wardrobe;
-    if (b.looks) state.looks = b.looks;
+    if (b.meals) state.meals = b.meals;
     const now = Date.now();
-    ['today', 'tasks', 'wardrobe'].forEach(k => { state.fetchedAt[k] = now; });
-    state.wsel.forEach(id => { const it = wById(id); if (!it || !isPickable(it)) state.wsel.delete(id); });
+    ['today', 'tasks', 'meals'].forEach(k => { state.fetchedAt[k] = now; });
     saveCache();
     repaintIfIdle();
   }).catch(e => { if (!state.today) fail(e); else console.warn('refresh failed', e); })
@@ -185,126 +181,14 @@ function repaintIfIdle() {
   const tab = currentTab();
   if (tab === 'today') paintToday();
   else if (tab === 'tasks' && state.taskView !== 'log') paintTasks();
-  else if (tab === 'wardrobe') paintWardrobe();
+  else if (tab === 'food') paintFood();
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && isStale('today')) refreshAll(); });
 
 
-// ---------------- quick pick (on the phone, instant) ----------------
-// Rule-based outfit from clean clothes: warmth for the coolest daytime "feels like", rain gear when wet,
-// dress code from the calendar, skips things worn in the last few days, favours pieces from liked looks.
-// Shown at once; the AI's answer replaces it a few seconds later. Pure function (easy to test).
-function draftFrom({ items, wx, events = [], date, avoid = [], liked = [] }) {
-  if (!wx || wx.error || !items?.length) return null;
-  const C = wx.unit === '°C';
-  const toF = t => (C ? t * 9 / 5 + 32 : t);
-  const day = (wx.hourly || []).filter(h => h.hour >= 7 && h.hour <= 19);
-  const feelsLo = day.length ? Math.min(...day.map(h => h.feels)) : (wx.morning?.feels ?? wx.low);
-  const feelsHi = day.length ? Math.max(...day.map(h => h.feels)) : wx.high;
-  const f = toF(feelsLo);
-  const target = f >= 80 ? 1 : f >= 68 ? 2 : f >= 55 ? 3 : f >= 42 ? 4 : 5;
-  const wet = (wx.rain_chance || 0) >= 40;
-  const titles = events.filter(e => String(e.start || '').startsWith(date)).map(e => (e.title || '').toLowerCase()).join(' ');
-  const want = /wedding|gala|party|ceremony|funeral|concert|recital/.test(titles) ? 'dressy'
-    : /dinner|interview|meeting|client|office|church|presentation/.test(titles) ? 'smart'
-    : /gym|soccer|practice|swim|yoga|run|hike|tennis|basketball|game|pe class|workout/.test(titles) ? 'athletic' : 'casual';
-  const FORM = ['athletic', 'casual', 'smart', 'dressy'];
-  const daysSince = d => (d ? dayDiff(d, date) : 99);
-  const score = (it, warmFor = target) => {
-    let s = Math.abs((it.warmth || 3) - warmFor);
-    s += Math.abs(FORM.indexOf(it.formality || 'casual') - FORM.indexOf(want)) * 0.8;
-    const ds = daysSince(it.last_worn); if (ds >= 0 && ds < 3) s += 1.5 - ds * 0.4;
-    if (avoid.includes(it.id)) s += 3;
-    if (liked.includes(it.id)) s -= 0.6;
-    return s;
-  };
-  const best = (cat, extra, warmFor) => items.filter(i => i.category === cat)
-    .map(i => ({ i, s: score(i, warmFor) + (extra ? extra(i) : 0) })).sort((a, b) => a.s - b.s)[0]?.i || null;
-  const u = wx.unit || '';
-  const layers = [];
-  const dress = want === 'dressy' || want === 'smart' ? best('dress') : null;
-  const top = best('top', null, Math.min(target, 4));
-  const bottom = best('bottom', null, Math.min(target + 1, 5));
-  if (dress && (!top || score(dress) <= score(top))) layers.push({ item: dress.name, item_id: dress.id, why: want === 'dressy' ? 'for the event' : 'smart for the day' });
-  else {
-    if (top) layers.push({ item: top.name, item_id: top.id, why: `feels ${feelsLo}–${feelsHi}${u}` });
-    if (bottom) layers.push({ item: bottom.name, item_id: bottom.id });
-  }
-  if (!layers.length) return null;
-  const needCoat = f < 62 || wet;
-  const coat = needCoat ? best('outerwear', i => (wet && !i.waterproof ? 1.5 : 0), target) : null;
-  if (coat) layers.unshift({ item: coat.name, item_id: coat.id, why: wet ? `${wx.rain_chance}% rain` : `${feelsLo}${u} at the coolest` });
-  const shoes = best('shoes', i => (wet && !i.waterproof ? 1 : 0), target);
-  if (shoes) layers.push({ item: shoes.name, item_id: shoes.id, why: wet ? 'wet ground' : '' });
-  layers.forEach(l => { if (!l.why) delete l.why; });
-  const bring = [];
-  if (wet) bring.push('Umbrella');
-  if ((wx.uv_max || 0) >= 6) bring.push('Sunglasses');
-  const swing = feelsHi - feelsLo >= (C ? 8 : 15);
-  return {
-    id: 'draft', date, draft: true,
-    summary: layers.map(l => l.item).join(' + '),
-    layers, bring,
-    tips: swing && coat ? `Layer up early (${feelsLo}${u}); you can take the ${coat.name.toLowerCase()} off when it warms to ${feelsHi}${u}.` : ''
-  };
-}
-
-function draftOutfit(pid, which, avoid = []) {
-  const t = state.today;
-  const wx = which === 'tomorrow' ? t?.tomorrow_weather : t?.weather;
-  const date = which === 'tomorrow' ? addDaysStr(todayStr(), 1) : todayStr();
-  const items = (state.wardrobe?.items || []).filter(i => (i.owner || 'me') === pid && isPickable(i));
-  const liked = (state.looks || []).filter(l => l.person === pid && l.rating === 1).flatMap(l => l.item_ids || []);
-  const d = draftFrom({ items, wx, events: t?.events || [], date, avoid, liked });
-  if (d) d.person = pid;
-  return d;
-}
-function addDaysStr(day, n) {
-  const d = new Date(day + 'T12:00:00'); d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-// Gets an outfit as fast as possible: a prepared "different idea" (instant), else the quick pick (instant)
-// followed by the AI's answer. `show` is called with each version; return value is the final one.
-// Opens a dialog with the first version; later versions only update it while it's still open.
-function modalShow(fn) {
-  let opened = false;
-  return o => { if (!opened || !$('#modal').hidden) fn(o); opened = true; };
-}
-let pickSeq = 0;
-async function fastPick({ pid, which, note = '', different = false, show }) {
-  const seq = ++pickSeq;
-  const live = () => seq === pickSeq;
-  const cur = outfitFor(pid, which);
-  if (different) {
-    const alt = state.today?.alts?.[pid]?.[which];
-    if (alt) {
-      state.today.alts[pid][which] = null;
-      setOutfit(pid, which, alt); saveCache(); show(alt);
-      api('outfit.promote', { id: alt.id }).catch(e => console.warn(e));
-      return alt;
-    }
-  }
-  const avoid = different ? (cur?.layers || []).map(l => l.item_id).filter(Boolean) : [];
-  const d = note ? null : draftOutfit(pid, which, avoid);   // a special request ("dinner out") needs the AI
-  if (d) show(d);
-  try {
-    const o = await api('outfit.generate', { date: which, note, person: pid, different }, { timeoutMs: state.settings?.outfit_mode === 'fast' ? 30000 : 90000 });
-    setOutfit(pid, which, o); saveCache();
-    if (live()) show(o);
-    return o;
-  } catch (e) {
-    if (!d) throw e;
-    d.ai_failed = true;
-    d.tips = (d.tips ? d.tips + ' ' : '') + "The AI didn't answer in time, so this is the quick pick from your clean clothes.";
-    if (live()) show(d);
-    return d;
-  }
-}
-
 // ---------------- router ----------------
-const VIEWS = { today: renderToday, chat: renderChat, wardrobe: renderWardrobe, tasks: renderTasks, settings: renderSettings };
-const TITLES = { today: 'Homebase', chat: 'Chat', wardrobe: 'Wardrobe', tasks: 'Tasks', settings: 'Settings' };
+const VIEWS = { today: renderToday, chat: renderChat, food: renderFood, tasks: renderTasks, settings: renderSettings };
+const TITLES = { today: 'Homebase', chat: 'Chat', food: 'Food', tasks: 'Tasks', settings: 'Settings' };
 
 function route() {
   let name = (location.hash || '#today').slice(1).split('?')[0];
@@ -314,7 +198,6 @@ function route() {
   $('#title').textContent = TITLES[name];
   $('.fab')?.remove();
   $('.composer')?.remove();
-  $('.wsel')?.remove();
   window.scrollTo(0, 0);
   VIEWS[name]();
 }
@@ -343,8 +226,7 @@ function paintToday() {
   view.innerHTML = `
     <div class="hello">${greet}<small>${dateLine}${t.today !== todayStr() ? ' · updating…' : ''}</small></div>
     <div id="quickSlot"></div>
-    ${weatherCard(wx)}
-    <div class="card" id="outfitCard">${outfitCardInner(outfitFor(currentPerson(), 'today'))}</div>
+    ${weatherCard(wx, t)}
     ${t.suggestions?.length ? suggestionsCard(t.suggestions) : ''}
     <div class="card">
       <h2>Due soon</h2>
@@ -357,11 +239,20 @@ function paintToday() {
 
   $('#quickSlot').replaceWith(quickBox());   // the same box survives repaints (typed text, attachment, result)
   bindTaskRows(view, () => renderToday());
-  bindOutfitCard();
   bindSuggestions();
 }
 
-function weatherCard(wx) {
+// What to bring: after 6pm it shows tomorrow's.
+const CARRY_ICON = { coat: '🧥', jacket: '🧥', umbrella: '☂️', boots: '🥾', sun: '🕶️', water: '💧', allergy: '🤧' };
+function carryHtml(t) {
+  const evening = new Date().getHours() >= 18 && t.tomorrow_carry;
+  const c = evening ? t.tomorrow_carry : t.carry;
+  if (!c) return '';
+  return `<div class="carry"><div class="muted small">${evening ? 'Tomorrow, bring' : 'Bring'}</div>
+    ${c.items?.length ? `<div class="carry-items">${c.items.map(i => `<span class="carry-i"><span aria-hidden="true">${CARRY_ICON[i.key] || '•'}</span><b>${esc(i.text)}</b>${i.why ? `<span class="muted">${esc(i.why)}</span>` : ''}</span>`).join('')}</div>`
+      : `<div class="small">${evening ? 'Nothing extra tomorrow.' : 'Nothing extra today.'}</div>`}</div>`;
+}
+function weatherCard(wx, t = {}) {
   if (wx.error) {
     return `<div class="card"><h2>Weather</h2><div class="muted small">${esc(wx.error)} <a href="#settings">Settings</a></div></div>`;
   }
@@ -373,117 +264,8 @@ function weatherCard(wx) {
         <div class="muted small">${wx.rain_chance >= 20 ? `${wx.rain_chance}% chance of rain · ` : ''}wind to ${wx.wind_max ?? '–'}</div></div>
     </div>
     ${hrs.length ? `<div class="wx-hours">${hrs.map(h => `<div><span class="muted">${hour12(h.hour)}</span><b>${h.temp}°</b><span class="muted">${h.rain >= 30 ? h.rain + '%☂' : 'feels ' + h.feels + '°'}</span></div>`).join('')}</div>` : ''}
+    ${carryHtml(t)}
   </div>`;
-}
-
-// Outfits are kept per person: "me" in today/tomorrow_outfit, everyone else in person_outfits[id].{today,tomorrow}.
-function outfitFor(pid, which = 'today') {
-  const t = state.today;
-  if (!t) return null;
-  if (pid === 'me') return (which === 'today' ? t.outfit : t.tomorrow_outfit) || null;
-  return t.person_outfits?.[pid]?.[which] || null;
-}
-function setOutfit(pid, which, o) {
-  const t = state.today;
-  if (!t) return;
-  if (pid === 'me') { if (which === 'today') t.outfit = o; else t.tomorrow_outfit = o; return; }
-  t.person_outfits = t.person_outfits || {};
-  t.person_outfits[pid] = t.person_outfits[pid] || {};
-  t.person_outfits[pid][which] = o;
-}
-function repaintOutfitCard() {
-  const c = $('#outfitCard');
-  if (!c || !state.today) return;
-  c.innerHTML = outfitCardInner(outfitFor(currentPerson(), 'today'));
-  bindOutfitCard();
-}
-
-function tomorrowRow(pid) {
-  const tm = outfitFor(pid, 'tomorrow');
-  return tm ? `<button type="button" class="tmr-row" id="seeTomorrow"><span class="muted small">Tomorrow</span><span class="grow">${esc(tm.summary || 'Ready')}</span><span aria-hidden="true">›</span></button>` : '';
-}
-
-function outfitCardInner(o) {
-  const pid = currentPerson();
-  const who = pid === 'me' ? '' : personName(pid);
-  const title = o && o.date !== todayStr() ? 'What to wear ' + esc(rel(o.date))
-    : who ? `What ${esc(who)} wears today` : 'What to wear today';
-  const chips = personChipsHtml();
-  if (!o) {
-    return `${chips}<h2>${title}</h2>
-      <div class="muted small" style="margin-bottom:10px">Based on the hourly weather, the calendar, and time indoors vs outdoors${state.wardrobe?.items?.some(i => i.owner === pid) ? ', using clean clothes from the wardrobe' : ''}.</div>
-      <label class="field"><input type="text" id="outfitNote" placeholder="Anything special? e.g. soccer game, dinner out"></label>
-      <div class="btn-row"><button class="btn primary" id="pickOutfit">Suggest an outfit</button>
-      <button class="btn" id="planTomorrow">Tomorrow</button></div>${tomorrowRow(pid)}`;
-  }
-  return `${chips}<h2>${title}</h2>
-    ${outfitBody(o)}
-    <div class="spacer"></div>
-    <div class="btn-row">
-      <button class="btn" id="another">Different idea</button>
-      <button class="btn ghost" id="planTomorrow">Tomorrow</button>
-    </div>${tomorrowRow(pid)}`;
-}
-
-function outfitBody(o, withWear = true) {
-  const layers = o.layers || [];
-  const ids = layers.map(l => l.item_id).filter(Boolean);
-  const allWorn = ids.length && ids.every(id => wById(id)?.worn_today);
-  const row = l => {
-    const pid = l.item_id ? wPhotoId(l.item_id) : '';
-    return `<li>${pid ? `<span class="ph sm" data-photo="${esc(pid)}"></span>` : ''}<span class="li-item">${esc(l.item)}</span>${l.why ? `<span class="li-why">${esc(l.why)}</span>` : ''}</li>`;
-  };
-  const note = o.draft ? `<div class="draft-note">${o.ai_failed ? 'Quick pick' : '<span class="spinner sm"></span> Quick pick · the AI is choosing a better one…'}</div>` : '';
-  return `${note}<div class="outfit-summary">${esc(o.summary || '')}</div>
-    ${layers.length ? `<ul class="layers">${layers.map(row).join('')}</ul>` : ''}
-    ${o.bring?.length ? `<div class="bring"><span class="muted small">Bring</span>${o.bring.map(b => `<span class="pill">${esc(b)}</span>`).join('')}</div>` : ''}
-    ${o.tips ? `<p class="tips">${esc(o.tips)}</p>` : ''}
-    ${ids.length ? `<div class="btn-row outfit-actions">
-      ${withWear ? (allWorn ? '<span class="wear-done muted small">Logged as worn ✓</span>'
-        : `<button class="btn small" data-wear-outfit data-ids="${esc(ids.join(','))}" data-date="${esc(o.date || todayStr())}" data-note="${esc((o.summary || '').slice(0, 120))}">I'm wearing this</button>`) : ''}
-      ${ids.length > 1 ? `<button class="btn small ghost" data-collage data-ids="${esc(ids.join(','))}">Collage</button>` : ''}
-    </div>` : ''}`;
-}
-
-function bindOutfitCard() {
-  const card = $('#outfitCard');
-  if (!card) return;
-  const pid = currentPerson();
-  const cur = outfitFor(pid, 'today');
-  if (cur?.layers?.some(l => l.item_id)) {
-    if (!state.wardrobe) {
-      api('wardrobe.list').then(w => { state.wardrobe = w; repaintOutfitCard(); }).catch(() => {});
-    } else ensurePhotos();
-  }
-  const showToday = o => { setOutfit(pid, 'today', o); repaintOutfitCard(); };
-  const gen = (btn, which, note, different) => {
-    if (which === 'today') {
-      btn.disabled = true;
-      return fastPick({ pid, which, note, different, show: showToday }).catch(fail).finally(() => { if (btn.isConnected) btn.disabled = false; });
-    }
-    return busy(btn, () => fastPick({ pid, which, note, different, show: modalShow(showOutfitModal) })).catch(fail);
-  };
-
-  $('#pickOutfit', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', $('#outfitNote', card).value.trim()));
-  $('#another', card)?.addEventListener('click', e => gen(e.currentTarget, 'today', '', true));
-  $('#seeTomorrow', card)?.addEventListener('click', () => { const tm = outfitFor(pid, 'tomorrow'); if (tm) showOutfitModal(tm); });
-  $('#planTomorrow', card)?.addEventListener('click', e => {
-    const tm = outfitFor(pid, 'tomorrow');
-    if (tm) showOutfitModal(tm);
-    else gen(e.currentTarget, 'tomorrow', '', false);
-  });
-}
-
-function showOutfitModal(o) {
-  const pid = o.person || 'me';
-  openModal(`<h3>${pid === 'me' ? 'What to wear' : esc(personName(pid)) + ' wears'} ${esc(rel(o.date))}</h3>${outfitBody(o)}
-    <div class="spacer"></div>
-    <div class="btn-row"><button class="btn" id="mAnother">Different idea</button><button class="btn primary" id="mClose">Got it</button></div>`);
-  ensurePhotos();
-  $('#mClose').onclick = closeModal;
-  $('#mAnother').onclick = e => busy(e.currentTarget, () =>
-    fastPick({ pid, which: o.date === todayStr() ? 'today' : 'tomorrow', different: true, show: n => { if (!$('#modal').hidden) showOutfitModal(n); if (n.date === todayStr()) repaintOutfitCard(); } })
-  ).catch(fail);
 }
 
 function suggestionsCard(list) {
@@ -779,47 +561,20 @@ function openTaskEditor(t, after) {
   });
 }
 
-// ================= WARDROBE =================
-const W_CATS = [['top', 'Tops'], ['bottom', 'Bottoms'], ['dress', 'Dresses'], ['outerwear', 'Outerwear'], ['shoes', 'Shoes'], ['accessory', 'Accessories'], ['other', 'Other']];
-const W_WARMTH = ['', 'Very light', 'Light', 'Medium', 'Warm', 'Very warm'];
-const W_FORMAL = [['athletic', 'Athletic'], ['casual', 'Casual'], ['smart', 'Smart casual'], ['dressy', 'Dressy']];
-const W_DEFAULT_WEARS = { top: 1, bottom: 3, dress: 1, outerwear: 10, shoes: 7, accessory: 10, other: 3 };
-const CUT_MODES = [['keep', 'Keep the photo as it is'], ['ai', 'Remove background (AI, on this phone)'], ['flat', 'Remove a plain background (quick)']];
-const BG_LIB = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs';
-state.wsel = new Set();
-state.wfilter = 'all';
-state.wsize = 'all';
-state.job = null;
-state.person = (() => { try { return localStorage.getItem('homebase.person') || 'me'; } catch { return 'me'; } })();
-
-const wById = id => (state.wardrobe?.items || []).find(i => i.id === id);
-const wPhotoId = id => wById(id)?.photo_id || '';
-const isPickable = i => i.active && !i.dirty;
+// ================= shared helpers =================
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const lsGet = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* optional */ } };
 
-// --- people (each has their own wardrobe) ---
+// --- people in the household ---
 function parsePeople(str) {
   try { const l = JSON.parse(str || '[]'); if (Array.isArray(l) && l.length) return l; } catch { /* default */ }
-  return [{ id: 'me', name: 'Me', kind: 'adult', size: '', notes: '' }];
+  return [{ id: 'me', name: 'Me', kind: 'adult', notes: '' }];
 }
-function people() { return state.wardrobe?.people || state.today?.people || parsePeople(state.settings?.people); }
+function people() { return state.today?.people || parsePeople(state.settings?.people); }
 function personName(id) { const ps = people(); return (ps.find(p => p.id === id) || ps[0]).name; }
-function currentPerson() { return people().some(p => p.id === state.person) ? state.person : 'me'; }   // never overwrites the saved choice while data is still loading
-function setPerson(id) { state.person = id; lsSet('homebase.person', id); }
-function personChipsHtml() {
-  const ps = people();
-  if (ps.length < 2) return '';
-  return `<div class="fchips pchips">${ps.map(p => `<button data-person="${esc(p.id)}" class="${currentPerson() === p.id ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>`;
-}
-document.addEventListener('click', e => {
-  const b = e.target.closest('[data-person]');
-  if (!b) return;
-  setPerson(b.dataset.person);
-  if (location.hash === '#wardrobe') { state.wsel.clear(); state.wfilter = 'all'; state.wsize = 'all'; paintWardrobe(); }
-  else repaintOutfitCard();
-});
+function myPersonId() { return state.me?.person_id || 'me'; }
+function setPerson(id) { lsSet('homebase.person', id); }
 
 // --- photo cache: memory + IndexedDB (photos are small images fetched from Drive through the backend) ---
 const photoMem = new Map();
@@ -867,7 +622,7 @@ async function ensurePhotos(extraIds = []) {
   for (let i = 0; i < todo.length; i += 12) {
     const chunk = todo.slice(i, i + 12);
     try {
-      const got = await api('wardrobe.photos', { ids: chunk });
+      const got = await api('photos.get', { ids: chunk });
       Object.entries(got || {}).forEach(([id, u]) => { photoMem.set(id, u); idbPut(id, u); });
     } catch (e) { console.error(e); }
     chunk.forEach(id => photoInflight.delete(id));
@@ -883,138 +638,22 @@ async function decodeImage(fileOrBlob) {
   try { return await createImageBitmap(fileOrBlob, { imageOrientation: 'from-image' }); }
   catch { return loadImg(URL.createObjectURL(fileOrBlob)); }
 }
-function canvasBlob(c, type, q) { return new Promise(res => c.toBlob(b => res(b), type, q)); }
+// Meal photos are stored at this size (longest side); receipts larger so the small print stays readable.
+const PHOTO_MAX = 800, RECEIPT_MAX = 1600;
 
-// Photos are stored at this size (longest side). Bigger = sharper but slower to load.
-const PHOTO_MAX = 800;
-
-// Longest side `max`. Normal photos become a JPEG on white. A PNG/WebP that already has a transparent
-// background (a cutout made elsewhere) stays a trimmed transparent PNG. Returns {url, data, mime, canvas, cutout}.
-async function shrinkImage(file, max = PHOTO_MAX) {
+// Longest side `max`, as a JPEG on white. Returns {url, data, mime}.
+async function shrinkImage(file, max = PHOTO_MAX, quality = 0.84) {
   const bmp = await decodeImage(file);
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
   const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
   bmp.close?.();
-  if (/^image\/(png|webp)$/.test(file.type || '')) {
-    const px = i => ctx.getImageData(i[0], i[1], 1, 1).data[3];
-    const corners = [[0, 0], [c.width - 1, 0], [0, c.height - 1], [c.width - 1, c.height - 1]];
-    if (corners.some(i => px(i) < 200)) {
-      try { return { ...trimToPng(c, max), cutout: true }; } catch { /* empty image: fall through to a normal photo */ }
-    }
-  }
-  ctx.globalCompositeOperation = 'destination-over';
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.globalCompositeOperation = 'source-over';
-  const url = c.toDataURL('image/jpeg', 0.86);
-  return { url, data: url.split(',')[1], mime: 'image/jpeg', canvas: c };
+  const url = c.toDataURL('image/jpeg', quality);
+  return { url, data: url.split(',')[1], mime: 'image/jpeg' };
 }
-
-// Crops transparent margins, fits into `max`, returns a PNG {url, data, mime}.
-function trimToPng(src, max = PHOTO_MAX) {
-  const w = src.width, h = src.height;
-  const px = src.getContext('2d').getImageData(0, 0, w, h).data;
-  let x0 = w, y0 = h, x1 = -1, y1 = -1;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    if (px[(y * w + x) * 4 + 3] > 24) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  }
-  if (x1 < 0) throw new Error('Nothing was left after removing the background.');
-  const m = 4;
-  x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w - 1, x1 + m); y1 = Math.min(h - 1, y1 + m);
-  const cw = x1 - x0 + 1, ch = y1 - y0 + 1, k = Math.min(1, max / Math.max(cw, ch));
-  const out = document.createElement('canvas');
-  out.width = Math.max(1, Math.round(cw * k)); out.height = Math.max(1, Math.round(ch * k));
-  out.getContext('2d').drawImage(src, x0, y0, cw, ch, 0, 0, out.width, out.height);
-  const url = out.toDataURL('image/png');
-  return { url, data: url.split(',')[1], mime: 'image/png', canvas: out };
-}
-
-// Plain-background cutout: flood-fills from the photo's edges over pixels close to the border colour.
-// Works on ImageData-like {data, width, height}; returns null when the background isn't plain enough.
-function flatCutout(img, tol = 42) {
-  const { data, width: w, height: h } = img;
-  const samples = [];
-  const take = (x, y) => { const i = (y * w + x) * 4; samples.push([data[i], data[i + 1], data[i + 2]]); };
-  for (let x = 0; x < w; x += 2) { take(x, 0); take(x, h - 1); }
-  for (let y = 0; y < h; y += 2) { take(0, y); take(w - 1, y); }
-  const med = c => { const v = samples.map(s => s[c]).sort((a, b) => a - b); return v[v.length >> 1]; };
-  const bg = [med(0), med(1), med(2)];
-  const dist = p => { const i = p * 4; return Math.hypot(data[i] - bg[0], data[i + 1] - bg[1], data[i + 2] - bg[2]); };
-  const seen = new Uint8Array(w * h), stack = new Int32Array(w * h);
-  let sp = 0, removed = 0;
-  const push = (x, y) => { const p = y * w + x; if (!seen[p] && dist(p) <= tol) { seen[p] = 1; stack[sp++] = p; } };
-  for (let x = 0; x < w; x++) { push(x, 0); push(x, h - 1); }
-  for (let y = 0; y < h; y++) { push(0, y); push(w - 1, y); }
-  while (sp) {
-    const p = stack[--sp]; removed++;
-    const x = p % w, y = (p / w) | 0;
-    if (x > 0) push(x - 1, y); if (x < w - 1) push(x + 1, y); if (y > 0) push(x, y - 1); if (y < h - 1) push(x, y + 1);
-  }
-  const frac = removed / (w * h);
-  if (frac < 0.08 || frac > 0.92) return null;
-  const out = new Uint8ClampedArray(data);
-  for (let p = 0; p < w * h; p++) {
-    if (seen[p]) { out[p * 4 + 3] = 0; continue; }
-    const x = p % w, y = (p / w) | 0;
-    if ((x > 0 && seen[p - 1]) || (x < w - 1 && seen[p + 1]) || (y > 0 && seen[p - w]) || (y < h - 1 && seen[p + w])) out[p * 4 + 3] = 150;   // soften the edge
-  }
-  return { data: out, width: w, height: h, removed: frac };
-}
-
-let bgLib = null;
-function loadBgLib() {
-  if (!bgLib) bgLib = import(BG_LIB).then(m => m.removeBackground || m.default).catch(() => { bgLib = null; throw new Error("Couldn't load the cutout tool. Check your connection, or use the quick option."); });
-  return bgLib;
-}
-
-// mode: keep | ai | flat. `src` comes from shrinkImage(). Returns {url, data, mime} to store.
-async function applyCutout(src, mode, onStatus = () => {}) {
-  if (src.cutout) return { url: src.url, data: src.data, mime: src.mime };   // already a transparent cutout
-  if (mode === 'ai') {
-    onStatus('Loading the cutout tool… (the first time downloads about 80 MB)');
-    const remove = await loadBgLib();
-    const small = await shrinkImage(await canvasBlob(src.canvas, 'image/jpeg', 0.9), 1024);
-    onStatus('Cutting out the clothing…');
-    const blob = await remove(await canvasBlob(small.canvas, 'image/jpeg', 0.9), {
-      output: { format: 'image/png' },
-      progress: (key, cur, tot) => { if (tot) onStatus(`Downloading the cutout tool… ${Math.round(100 * cur / tot)}%`); }
-    });
-    const bmp = await decodeImage(blob);
-    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
-    c.getContext('2d').drawImage(bmp, 0, 0);
-    bmp.close?.();
-    return trimToPng(c);
-  }
-  if (mode === 'flat') {
-    onStatus('Removing the background…');
-    const ctx = src.canvas.getContext('2d');
-    const res = flatCutout(ctx.getImageData(0, 0, src.canvas.width, src.canvas.height));
-    if (!res) throw new Error("The background isn't plain enough for the quick option. Try the AI option or keep the photo.");
-    const c = document.createElement('canvas'); c.width = res.width; c.height = res.height;
-    c.getContext('2d').putImageData(new ImageData(res.data, res.width, res.height), 0, 0);
-    return trimToPng(c);
-  }
-  return { url: src.url, data: src.data, mime: src.mime };
-}
-
-// Turns a photo (data URL) by 90/180/270 degrees clockwise. Keeps transparency for PNG cutouts.
-async function rotateImage(url, deg) {
-  const img = await loadImg(url);
-  const q = ((deg % 360) + 360) % 360;
-  const swap = q === 90 || q === 270;
-  const c = document.createElement('canvas');
-  c.width = swap ? img.height : img.width; c.height = swap ? img.width : img.height;
-  const ctx = c.getContext('2d');
-  const png = url.startsWith('data:image/png');
-  if (!png) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
-  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(q * Math.PI / 180);
-  ctx.drawImage(img, -img.width / 2, -img.height / 2);
-  const out = png ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.86);
-  return { url: out, data: out.split(',')[1], mime: png ? 'image/png' : 'image/jpeg', canvas: c };
-}
-
 // A stored photo (jpeg/png data URL) as a JPEG on white, for sending to AI.
 async function urlToJpegData(url) {
   const img = await loadImg(url);
@@ -1025,634 +664,284 @@ async function urlToJpegData(url) {
   return c.toDataURL('image/jpeg', 0.8).split(',')[1];
 }
 
-// --- background job (bulk add, describe with AI): runs while you use the app ---
-function paintJobBar() {
-  $('.jobbar')?.remove();
-  const j = state.job;
-  if (!j) return;
-  const bar = document.createElement('div');
-  bar.className = 'jobbar';
-  bar.innerHTML = `<div class="grow"><div class="small"><b>${esc(j.title)}</b> · ${esc(j.label)}</div>
-    <div class="progress"><i style="width:${j.total ? Math.round(100 * j.done / j.total) : 0}%"></i></div></div>
-    <button class="btn small ghost" id="jobStop">Stop</button>`;
-  document.body.appendChild(bar);
-  $('#jobStop').onclick = () => { j.cancel = true; j.label = 'Stopping…'; paintJobBar(); };
+// ================= FOOD =================
+const MEALS = [['breakfast', 'Breakfast', '🥞'], ['lunch', 'Lunch', '🥗'], ['dinner', 'Dinner', '🍲'], ['snack', 'Snack', '🍎'], ['dessert', 'Dessert', '🍰'], ['drink', 'Drink', '🧋']];
+const SOURCES = [['homemade', 'Homemade'], ['restaurant', 'Restaurant'], ['takeout', 'Takeout'], ['packaged', 'Packaged']];
+const TAGS = ['sweet', 'savory', 'spicy', 'fried', 'soup', 'noodles', 'rice', 'light', 'heavy', 'high-protein', 'veggie-rich', 'vegetarian', 'seafood', 'comfort', 'healthy', 'treat'];
+const NEEDS = [['weight loss', 'Losing weight'], ['craving sweet', 'Craving sweet'], ['craving savory', 'Craving savory'], ['something light', 'Something light'],
+  ['comfort food', 'Comfort food'], ['high protein', 'High protein'], ['on my period', 'On my period'], ['low energy', 'Low energy'],
+  ['something new', 'Something new'], ['quick and easy', 'Quick & easy'], ['budget', 'Budget'], ['kid-friendly', 'Kid-friendly']];
+const WHERE = [['home', '🏠', 'Cook at home'], ['out', '🍽️', 'Eat out'], ['takeout', '🥡', 'Takeout'], ['any', '🎲', 'Surprise me']];
+const EFFORT = [['15 minutes', '⚡ 15 min'], ['normal', 'Normal'], ['no limit', 'No rush']];
+const mealIcon = m => (MEALS.find(x => x[0] === m) || MEALS[2])[2];
+const mealLabel = m => (MEALS.find(x => x[0] === m) || [m, m])[1];
+const nowHHMM = (d = new Date()) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const dayOf = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function mealByTime(hhmm) {
+  const h = parseInt(String(hhmm || nowHHMM()).slice(0, 2), 10);
+  return h < 10 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snack' : h < 22 ? 'dinner' : 'snack';
 }
-async function runJob(title, total, fn) {
-  if (state.job) return toast('Another job is still running.', true);
-  const job = state.job = { title, total, done: 0, label: 'Starting…', cancel: false, notes: [] };
-  paintJobBar();
-  try { await fn(job, () => paintJobBar()); }
-  catch (e) { job.notes.push(e.message || String(e)); }
-  state.job = null; paintJobBar();
-  if (location.hash === '#wardrobe') paintWardrobe();
-  toast(job.notes.length ? job.notes.slice(0, 2).join(' · ') : `${title}: done.`, job.notes.length > 0);
+state.ffilter = 'all';
+state.fshow = 30;   // days shown in the list
+
+async function renderFood() {
+  if (state.meals) paintFood();
+  else view.innerHTML = '<div class="card"><div class="skeleton" style="height:160px"></div></div><div class="card"><div class="skeleton" style="height:220px"></div></div>';
+  addFab(() => openMealEditor(null));
+  if (isStale('meals')) refreshAll();
 }
 
-// Asks AI to describe one saved item from its photo and saves the details.
-async function describeItem(item, jpegData) {
-  const data = jpegData || await urlToJpegData(photoMem.get(item.photo_id));
-  const f = await api('wardrobe.analyze', { photo: { data, mime: 'image/jpeg' } });
-  const res = await api('wardrobe.save', {
-    id: item.id, name: f.name, category: f.category, color: f.color, warmth: f.warmth, waterproof: f.waterproof,
-    formality: f.formality, notes: f.notes, wears_limit: f.wears_limit, size: item.size || f.size || '', needs_details: false
-  });
-  state.wardrobe = res;
-}
-const isQuotaError = e => /limit|quota|429/i.test(e.message || '');
-
-async function describePending(items) {
-  const list = items.filter(i => i.needs_details && i.photo_id);
-  if (!list.length) return toast('Nothing to describe.');
-  await runJob('Describing with AI', list.length, async (job, repaint) => {
-    await ensurePhotos(list.map(i => i.photo_id));
-    for (const it of list) {
-      if (job.cancel) break;
-      job.label = `${job.done + 1} of ${list.length}`; repaint();
-      try { await describeItem(wById(it.id) || it); }
-      catch (e) { if (isQuotaError(e)) { job.notes.push('AI limit reached. The rest can wait until tomorrow.'); break; } job.notes.push(`${it.name}: ${e.message}`); }
-      job.done++; repaint();
-      if (location.hash === '#wardrobe') paintWardrobe();
-      await sleep(3500);
-    }
-  });
+function weekSummary(list) {
+  const since = dayOf(new Date(Date.now() - 6 * 864e5));
+  const wk = list.filter(m => m.date >= since);
+  if (!wk.length) return '';
+  const by = k => wk.filter(m => m.source === k).length;
+  const sweets = wk.filter(m => (m.tags || []).includes('sweet') || m.meal === 'dessert').length;
+  const parts = [`${wk.length} meal${wk.length > 1 ? 's' : ''}`];
+  if (by('homemade')) parts.push(`${by('homemade')} homemade`);
+  if (by('restaurant')) parts.push(`${by('restaurant')} out`);
+  if (by('takeout')) parts.push(`${by('takeout')} takeout`);
+  if (sweets) parts.push(`${sweets} sweet`);
+  return 'Last 7 days: ' + parts.join(' · ');
 }
 
-// --- list view ---
-async function renderWardrobe() {
-  if (state.wardrobe) paintWardrobe();
-  else view.innerHTML = '<div class="card"><div class="skeleton" style="height:220px"></div></div>';
-  if (isStale('wardrobe')) refreshAll();
+function mealRow(m) {
+  const who = (m.people || []).length > 1 || (m.people || [])[0] !== myPersonId()
+    ? `<span class="who">${(m.people || []).map(id => esc(personName(id).charAt(0).toUpperCase())).join('')}</span>` : '';
+  const sub = [mealLabel(m.meal) + (m.time ? ' ' + time12(m.time) : ''), m.source === 'homemade' ? 'Homemade' : m.place || (SOURCES.find(s => s[0] === m.source) || ['', ''])[1], m.calories ? `~${m.calories} kcal` : ''].filter(Boolean).join(' · ');
+  return `<button type="button" class="meal-row" data-meal="${esc(m.id)}">
+    <span class="ph meal-ph" ${m.photo_id ? `data-photo="${esc(m.photo_id)}"` : ''}><span class="ph-i">${mealIcon(m.meal)}</span></span>
+    <span class="grow"><b>${esc(m.name)}${m.rating === 1 ? ' <span class="loved" title="Loved it">♥</span>' : ''}</b><span class="muted small">${esc(sub)}</span></span>${who}</button>`;
 }
 
-function wCardHtml(i) {
-  const off = !i.active || (i.dirty && !i.worn_today);
-  const sel = state.wsel.has(i.id);
-  const badge = !i.active ? '<span class="wbadge">Retired</span>'
-    : i.worn_today ? `<span class="wbadge ok">Worn today${i.dirty ? ' · wash' : ''}</span>`
-    : i.dirty ? '<span class="wbadge warn">Laundry</span>'
-    : i.needs_details ? '<span class="wbadge">Needs details</span>' : '';
-  const initial = esc((i.name || '?').trim().charAt(0).toUpperCase());
-  return `<div class="wcard${sel ? ' sel' : ''}${off ? ' off' : ''}" data-id="${i.id}">
-    <div class="ph" data-photo="${esc(i.photo_id || '')}"><span class="ph-i">${initial}</span>${badge}${sel ? `<span class="wtick">${CHECK}</span>` : ''}</div>
-    <button class="wedit" data-edit="${i.id}" aria-label="Edit ${esc(i.name)}">✎</button>
-    <div class="wname">${esc(i.name)}</div>
-    <div class="wmeta">${esc([i.color, i.size, `${i.wears}/${i.wears_limit}`].filter(Boolean).join(' · '))}</div>
-  </div>`;
-}
-
-function paintWardrobe() {
+function paintFood() {
   saveCache();
-  const w = state.wardrobe;
-  const pid = currentPerson();
-  const mine = (w?.items || []).filter(i => i.owner === pid);
-  const present = W_CATS.filter(([v]) => mine.some(i => i.category === v));
-  if (state.wfilter !== 'all' && !present.some(([v]) => v === state.wfilter)) state.wfilter = 'all';
-  const sizes = [...new Set(mine.map(i => i.size).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  if (state.wsize !== 'all' && !sizes.includes(state.wsize)) state.wsize = 'all';
-  const shown = mine.filter(i => (state.wfilter === 'all' || i.category === state.wfilter) && (state.wsize === 'all' || i.size === state.wsize));
-  const dirty = mine.filter(i => i.active && i.dirty);
-  const pending = mine.filter(i => i.needs_details && i.photo_id);
-  const who = pid === 'me' ? 'you' : personName(pid);
-
-  view.innerHTML = `${personChipsHtml()}${!mine.length
-    ? `<div class="empty"><div class="big">No clothes yet${pid === 'me' ? '' : ' for ' + esc(personName(pid))}</div>Tap + to add one item, or many photos at once.<br>AI fills in the details for you.</div>`
-    : `<div class="card" id="aiPick">
-        <h2>Let AI pick${pid === 'me' ? '' : ' for ' + esc(personName(pid))}</h2>
-        <div class="muted small" style="margin-bottom:8px">Uses only clean clothes, matched to today's weather and calendar.</div>
-        <label class="field" style="margin-bottom:8px"><input type="text" id="aiNote" placeholder="Anything special? e.g. dinner out" autocomplete="off"></label>
-        <button class="btn primary block" id="aiGo">Suggest from the wardrobe</button>
-        <button class="btn ghost block" id="histBtn" style="margin-top:8px">Past looks</button>
-      </div>
-      ${pending.length ? `<div class="laundry-bar info"><span>✨ <b>${pending.length}</b> need${pending.length > 1 ? '' : 's'} details</span><button class="btn small" id="descBtn">Describe with AI</button></div>` : ''}
-      ${dirty.length ? `<div class="laundry-bar"><span>🧺 <b>${dirty.length}</b> item${dirty.length > 1 ? 's' : ''} need washing</span><button class="btn small" id="washBtn">Mark washed</button></div>` : ''}
-      <div class="fchips" id="wFilter">
-        <button data-f="all" class="${state.wfilter === 'all' ? 'on' : ''}">All <span>${mine.length}</span></button>
-        ${present.map(([v, l]) => `<button data-f="${v}" class="${state.wfilter === v ? 'on' : ''}">${l} <span>${mine.filter(i => i.category === v).length}</span></button>`).join('')}
-      </div>
-      ${sizes.length > 1 ? `<label class="size-filter"><span class="muted small">Size</span><select id="wSize"><option value="all">All sizes</option>${sizes.map(z => `<option ${state.wsize === z ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></label>` : ''}
-      <div class="muted small" style="margin:4px 2px 8px">Tap clothes to select what ${esc(who)} ${pid === 'me' ? 'are' : 'is'} wearing, then tap “Wear today”.</div>
-      <div class="wgrid" id="wGrid">${shown.map(wCardHtml).join('')}</div>`}`;
-
-  $('#aiGo')?.addEventListener('click', e => busy(e.currentTarget, () =>
-    fastPick({ pid, which: 'today', note: $('#aiNote').value.trim(), show: modalShow(showWardrobeOutfit) })
-  ).catch(fail));
-  $('#histBtn')?.addEventListener('click', () => openHistory(pid));
-  $('#washBtn')?.addEventListener('click', () => openLaundry(mine));
-  $('#descBtn')?.addEventListener('click', () => describePending(mine));
-  $$('#wFilter button').forEach(b => b.addEventListener('click', () => { state.wfilter = b.dataset.f; paintWardrobe(); }));
-  $('#wSize')?.addEventListener('change', e => { state.wsize = e.target.value; paintWardrobe(); });
-  $('#wGrid')?.addEventListener('click', e => {
-    const ed = e.target.closest('[data-edit]');
-    if (ed) return openItemEditor(wById(ed.dataset.edit));
-    const card = e.target.closest('.wcard');
-    if (!card) return;
-    const it = wById(card.dataset.id);
-    if (!it) return;
-    if (!isPickable(it)) return openItemEditor(it);          // retired, in laundry or already worn: details + actions
-    if (state.wsel.has(it.id)) state.wsel.delete(it.id); else state.wsel.add(it.id);
-    card.classList.toggle('sel', state.wsel.has(it.id));
-    const ph = $('.ph', card);
-    $('.wtick', ph)?.remove();
-    if (state.wsel.has(it.id)) ph.insertAdjacentHTML('beforeend', `<span class="wtick">${CHECK}</span>`);
-    paintSelBar();
-  });
-  addFab(openAddChooser);
-  paintSelBar();
-  ensurePhotos();
-}
-
-// Gives the selected items to another person (for example, clothes that were added under the wrong name).
-function openMoveTo(ids) {
-  openModal(`<h3>Move ${ids.length} item${ids.length > 1 ? 's' : ''} to…</h3>
-    <div class="btn-row" style="flex-wrap:wrap">${people().map(p => `<button class="btn" data-to="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`);
-  $$('#modalBody [data-to]').forEach(b => b.onclick = () => busy(b, async () => {
-    for (const id of ids) state.wardrobe = await api('wardrobe.save', { id, owner: b.dataset.to });
-    state.wsel.clear(); closeModal(); toast(`Moved to ${personName(b.dataset.to)}.`);
-    if (location.hash === '#wardrobe') paintWardrobe();
-  }).catch(fail));
-}
-
-function paintSelBar() {
-  $('.wsel')?.remove();
-  const n = state.wsel.size;
-  $('.fab')?.classList.toggle('hidden', n > 0);
-  if (!n) return;
-  const bar = document.createElement('div');
-  bar.className = 'wsel';
-  bar.innerHTML = `<span><b>${n}</b> selected</span><button class="btn small ghost" id="wClear">Clear</button>${n > 1 ? '<button class="btn small" id="wColl">Collage</button>' : ''}${people().length > 1 ? '<button class="btn small" id="wMove">Move to…</button>' : ''}<button class="btn small primary" id="wWear">Wear today</button>`;
-  document.body.appendChild(bar);
-  $('#wClear').onclick = () => { state.wsel.clear(); paintWardrobe(); };
-  $('#wColl')?.addEventListener('click', () => openCollage([...state.wsel]));
-  $('#wMove')?.addEventListener('click', () => openMoveTo([...state.wsel]));
-  $('#wWear').onclick = e => busy(e.currentTarget, () => wearIds([...state.wsel], todayStr(), { source: 'manual' })).catch(fail);
-}
-
-// Records items as worn; the backend skips anything that needs washing.
-async function wearIds(ids, date, meta = {}) {
-  const res = await api('wardrobe.wear', { ids, date, ...meta });
-  state.wardrobe = { today: res.today, items: res.items, people: res.people };
-  state.wsel.clear();
-  const skipped = res.skipped || [];
-  toast(skipped.length
-    ? `Logged ${res.worn.length}. Skipped: ${skipped.map(s => `${s.name} (${s.reason})`).join(', ')}`
-    : `Logged ${res.worn.length} item${res.worn.length === 1 ? '' : 's'} as worn.`, skipped.length > 0);
-  if (location.hash === '#wardrobe') paintWardrobe();
-  return res;
-}
-
-function openLaundry(pool) {
-  const list = (pool || state.wardrobe?.items || []).filter(i => i.wears > 0);
-  if (!list.length) return toast('Nothing to wash.');
-  openModal(`<h3>Mark washed</h3>
-    <div class="muted small" style="margin-bottom:8px">Washed items go back to 0 wears and can be picked again.</div>
-    ${list.map(i => `<label class="wash-row"><input type="checkbox" value="${i.id}" ${i.dirty ? 'checked' : ''}>
-      <span class="ph sm" data-photo="${esc(i.photo_id || '')}"></span>
-      <span class="grow"><b>${esc(i.name)}</b><br><span class="muted small">${i.wears}/${i.wears_limit} wears${i.dirty ? ' · needs washing' : ''}</span></span></label>`).join('')}
-    <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="washGo">Mark washed</button><button class="btn" id="washAll">All of these</button></div>`);
-  ensurePhotos();
-  const go = (all) => e => busy(e.currentTarget, async () => {
-    const ids = all ? list.map(i => i.id) : $$('#modalBody input:checked').map(c => c.value);
-    if (!ids.length) throw new Error('Pick at least one item.');
-    state.wardrobe = await api('wardrobe.laundry', { ids });
-    closeModal(); toast('Washed. They are available again.');
-    if (location.hash === '#wardrobe') paintWardrobe();
-  }).catch(fail);
-  $('#washGo').onclick = go(false);
-  $('#washAll').onclick = go(true);
-}
-
-function showWardrobeOutfit(o) {
-  const ids = (o.layers || []).map(l => l.item_id).filter(Boolean);
-  const pid = o.person || 'me';
-  openModal(`<h3>${pid === 'me' ? 'Today from your wardrobe' : esc(personName(pid)) + ' today'}</h3>${outfitBody(o, false)}
-    <div class="spacer"></div>
-    <div class="btn-row">
-      ${ids.length ? '<button class="btn primary" id="aiWear">Wear this</button><button class="btn" id="aiEdit">Pick myself</button>' : ''}
-      <button class="btn" id="aiAgain">Different idea</button>
-    </div>`);
-  ensurePhotos();
-  $('#aiWear')?.addEventListener('click', e => busy(e.currentTarget, async () => { await wearIds(ids, o.date); closeModal(); }).catch(fail));
-  $('#aiEdit')?.addEventListener('click', () => { state.wsel = new Set(ids.filter(id => { const i = wById(id); return i && isPickable(i); })); closeModal(); paintWardrobe(); });
-  $('#aiAgain')?.addEventListener('click', e => busy(e.currentTarget, () =>
-    fastPick({ pid, which: o.date === todayStr() ? 'today' : 'tomorrow', different: true, show: n => { if (!$('#modal').hidden) showWardrobeOutfit(n); } })
-  ).catch(fail));
-}
-
-// --- adding clothes ---
-function openAddChooser() {
-  openModal(`<h3>Add clothes</h3>
-    <div class="muted small" style="margin-bottom:12px">For ${esc(personName(currentPerson()))}. Photos are shrunk on your phone before they are saved.</div>
-    <div class="btn-row"><button class="btn primary" id="addOne">One item</button><button class="btn" id="addMany">Many photos at once</button></div>`);
-  $('#addOne').onclick = () => openItemEditor(null);
-  $('#addMany').onclick = openBulkAdd;
-}
-
-function cutSelectHtml(id, value) {
-  return `<select id="${id}">${CUT_MODES.map(([v, l]) => `<option value="${v}" ${value === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
-}
-
-function openBulkAdd() {
+  const all = state.meals || [];
   const ps = people();
-  openModal(`<h3>Add many photos</h3>
-    <label class="field"><span>Photos (one clothing item per photo)</span><input type="file" id="bFiles" accept="image/*" multiple></label>
-    ${ps.length > 1 ? `<label class="field"><span>Belongs to</span><select id="bWho">${ps.map(p => `<option value="${esc(p.id)}" ${p.id === currentPerson() ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
-    <label class="field"><span>Turn every photo</span><select id="bRot"><option value="0">Leave as taken</option><option value="90">Turn right ↻</option><option value="270">Turn left ↺</option><option value="180">Upside down</option></select></label>
-    <label class="field"><span>Background</span>${cutSelectHtml('bCut', lsGet('homebase.cut', 'keep'))}</label>
-    <label class="field check-field row-field"><input type="checkbox" id="bDesc" checked><span>Describe each with AI afterwards (one at a time, paced to stay within the free limit)</span></label>
-    <div class="muted small" id="bInfo" style="margin-bottom:10px">Tip: lay each item flat on a plain, contrasting surface. You can keep using the app while this runs.</div>
-    <button class="btn primary block" id="bGo">Start</button>`);
-  $('#bGo').onclick = () => {
-    const files = [...($('#bFiles').files || [])];
-    if (!files.length) return toast('Choose at least one photo.', true);
-    const owner = $('#bWho')?.value || currentPerson();
-    const mode = $('#bCut').value, describe = $('#bDesc').checked, rot = Number($('#bRot').value) || 0;
-    lsSet('homebase.cut', mode);
-    closeModal();
-    runBulk(files, owner, mode, describe, rot);
+  const f = state.ffilter;
+  const list = f === 'all' ? all : all.filter(m => (m.people || []).includes(f));
+  const since = dayOf(new Date(Date.now() - (state.fshow - 1) * 864e5));
+  const shown = list.filter(m => m.date >= since);
+  const days = [];
+  shown.forEach(m => { const d = days.find(x => x.date === m.date); if (d) d.items.push(m); else days.push({ date: m.date, items: [m] }); });
+  const dayTitle = d => { const r = rel(d); return r === 'today' ? 'Today' : r === 'yesterday' ? 'Yesterday' : niceDate(d); };
+  view.innerHTML = `
+    <div class="card food-hero">
+      <div class="fh-q">Not sure what to eat?</div>
+      <div class="muted small">A few quick questions, then three ideas from what you've been eating.</div>
+      <button class="btn primary block" id="fGuess" style="margin-top:12px">Guess what I want to eat</button>
+    </div>
+    ${ps.length > 1 ? `<div class="fchips" id="fFilter"><button data-f="all" class="${f === 'all' ? 'on' : ''}">Everyone</button>${ps.map(p => `<button data-f="${esc(p.id)}" class="${f === p.id ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>` : ''}
+    ${weekSummary(list) ? `<div class="muted small food-week">${esc(weekSummary(list))}</div>` : ''}
+    ${days.length ? days.map(d => `<div class="section-title">${esc(dayTitle(d.date))}<span>${d.items.length}</span></div><div class="card meal-list">${d.items.map(mealRow).join('')}</div>`).join('')
+      : `<div class="card empty-food"><div class="big">📷</div><div>Snap your meals with <b>+</b>, add the receipt if you have one, and Homebase fills in the rest.</div><div class="muted small" style="margin-top:6px">Or just tell the chat: "had pho at Pho 75 for lunch".</div></div>`}
+    ${list.length > shown.length ? `<button class="btn ghost block" id="fMore">Show earlier meals</button>` : ''}
+    <div class="spacer"></div>`;
+  $('#fGuess').onclick = () => openGuess();
+  $$('#fFilter [data-f]').forEach(b => b.onclick = () => { state.ffilter = b.dataset.f; paintFood(); });
+  $('#fMore')?.addEventListener('click', () => { state.fshow += 60; paintFood(); });
+  $$('[data-meal]', view).forEach(b => b.onclick = () => { const m = (state.meals || []).find(x => x.id === b.dataset.meal); if (m) openMealEditor(m); });
+  ensurePhotos();
+}
+
+function upsertMeal(m, removed) {
+  const l = (state.meals || []).filter(x => x.id !== m.id);
+  if (!removed) l.push(m);
+  state.meals = l.sort((a, b) => ((b.date + (b.time || '99')) > (a.date + (a.time || '99')) ? 1 : -1));
+  invalidate(); saveCache();
+  if (location.hash === '#food') paintFood();
+}
+
+// --- add / edit a meal ---
+// Stage 1 (new meal): food photo, optional receipt, a note, who ate → "Read it" (AI) or fill in by hand.
+// Stage 2: the form (pre-filled by the AI), then Save.
+function openMealEditor(meal, prefill) {
+  const draft = { photo: null, receipt: null, people: meal?.people || prefill?.people || [myPersonId()], taken: null };
+  if (meal || prefill) return mealForm(meal, prefill || {}, draft);
+  const ps = people();
+  openModal(`<h3>Add a meal</h3>
+    <div class="snap-row">
+      <label class="snap" id="snapFood"><input type="file" accept="image/*" id="mPhoto" hidden><span class="ph snap-ph" id="mPhotoPh"><span class="ph-i">📷</span></span><span class="small">Food photo</span></label>
+      <label class="snap" id="snapRcpt"><input type="file" accept="image/*" id="mRcpt" hidden><span class="ph snap-ph" id="mRcptPh"><span class="ph-i">🧾</span></span><span class="small">Receipt <span class="muted">(optional)</span></span></label>
+    </div>
+    <label class="field"><span>Anything to add? (optional)</span><input type="text" id="mHint" placeholder="e.g. half portion, shared with Drey" maxlength="200"></label>
+    ${ps.length > 1 ? `<div class="field"><span>Who ate</span><div class="fchips" id="mWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${draft.people.includes(p.id) ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    <button class="btn primary block" id="mRead">Read it</button>
+    <button class="btn ghost block" id="mByHand" style="margin-top:6px">Fill in by hand</button>`);
+  const pick = async (input, ph, key, max) => {
+    const file = input.files?.[0]; if (!file) return;
+    try {
+      const img = await shrinkImage(file, max, key === 'receipt' ? 0.8 : 0.84);
+      draft[key] = img;
+      if (key === 'photo' && file.lastModified && Date.now() - file.lastModified < 7 * 864e5) draft.taken = new Date(file.lastModified);
+      ph.style.backgroundImage = `url("${img.url}")`; ph.classList.add('has');
+    } catch (e) { fail(e); }
+  };
+  $('#mPhoto').onchange = e => pick(e.target, $('#mPhotoPh'), 'photo', PHOTO_MAX);
+  $('#mRcpt').onchange = e => pick(e.target, $('#mRcptPh'), 'receipt', RECEIPT_MAX);
+  $$('#mWho [data-p]').forEach(b => b.onclick = () => {
+    b.classList.toggle('on');
+    draft.people = $$('#mWho [data-p].on').map(x => x.dataset.p);
+  });
+  $('#mByHand').onclick = () => mealForm(null, { note: $('#mHint').value.trim() }, draft);
+  $('#mRead').onclick = e => {
+    const hint = $('#mHint').value.trim();
+    if (!draft.photo && !draft.receipt && !hint) return toast('Add a photo, a receipt or a few words first.', true);
+    const t = draft.taken || new Date();
+    busy(e.currentTarget, async () => {
+      e.currentTarget.textContent = 'Reading…';
+      const r = await api('meals.analyze', {
+        photo: draft.photo ? { data: draft.photo.data, mime: draft.photo.mime } : undefined,
+        receipt: draft.receipt ? { data: draft.receipt.data, mime: draft.receipt.mime } : undefined,
+        hint, date: dayOf(t), time: nowHHMM(t), people: draft.people
+      }, { timeoutMs: 90000 });
+      mealForm(null, { ...r, note: hint, ai: true }, draft);
+    }).catch(fail);
   };
 }
 
-async function runBulk(files, owner, mode, describe, rot = 0) {
-  const added = [];
-  await runJob('Adding photos', files.length * (describe ? 2 : 1), async (job, repaint) => {
-    if (!state.wardrobe) state.wardrobe = await api('wardrobe.list');
-    let cutFailures = 0;
-    for (let i = 0; i < files.length; i++) {
-      if (job.cancel) break;
-      job.label = `photo ${i + 1} of ${files.length}`; repaint();
-      try {
-        let src = await shrinkImage(files[i]);
-        if (rot) src = await rotateImage(src.url, rot);
-        let photo;
-        try { photo = await applyCutout(src, mode, t => { job.label = `photo ${i + 1} of ${files.length}: ${t}`; repaint(); }); }
-        catch (e) { cutFailures++; photo = { data: src.data, mime: src.mime }; if (mode === 'ai' && cutFailures === 1) job.notes.push(e.message); }
-        const before = new Set(state.wardrobe.items.map(x => x.id));
-        const res = await api('wardrobe.save', { name: 'New item', category: 'other', owner, needs_details: true, photo: { data: photo.data, mime: photo.mime } });
-        state.wardrobe = res;
-        const item = res.items.find(x => !before.has(x.id));
-        if (item) added.push({ id: item.id, jpeg: src.mime === 'image/jpeg' ? src.data : await urlToJpegData(src.url) });
-      } catch (e) { job.notes.push(`Photo ${i + 1}: ${e.message}`); }
-      job.done++; repaint();
-      if (location.hash === '#wardrobe') paintWardrobe();
-    }
-    if (describe && !job.cancel) {
-      for (let i = 0; i < added.length; i++) {
-        if (job.cancel) break;
-        job.label = `describing ${i + 1} of ${added.length}`; repaint();
-        try { await describeItem(wById(added[i].id), added[i].jpeg); }
-        catch (e) { if (isQuotaError(e)) { job.notes.push('AI limit reached. Describe the rest later (tap “Describe with AI”).'); break; } job.notes.push(e.message); }
-        job.done++; repaint();
-        if (location.hash === '#wardrobe') paintWardrobe();
-        await sleep(3500);
-      }
-    }
-  });
-}
-
-// --- add / edit one item ---
-function openItemEditor(item) {
-  const isNew = !item;
+function mealForm(meal, pre, draft) {
+  const m = meal || {};
+  const v = k => (pre[k] !== undefined ? pre[k] : m[k]);
   const ps = people();
-  const it = item || { name: '', category: 'top', color: '', warmth: 3, waterproof: false, formality: 'casual', notes: '', wears_limit: W_DEFAULT_WEARS.top, wears: 0, active: true, owner: currentPerson(), size: '' };
-  let src = null;              // newly chosen photo (shrunk JPEG)
-  let photo = null;            // what will be stored: src or its cutout {url, data, mime}
-  let limitTouched = !isNew;
-  openModal(`
-    <h3>${isNew ? 'Add clothes' : 'Edit item'}</h3>
-    <div class="item-photo">
-      <div class="ph big" id="iPh" data-photo="${esc(it.photo_id || '')}"><span class="ph-i">${esc((it.name || '+').charAt(0).toUpperCase())}</span></div>
-      <div class="grow">
-        <input type="file" id="iFile" accept="image/*" hidden>
-        <button type="button" class="btn small" id="iPick">${it.photo_id ? 'Change photo' : 'Add photo'}</button>
-        <button type="button" class="btn small ghost${it.photo_id ? '' : ' hidden'}" id="iRotL" aria-label="Turn left">↺</button><button type="button" class="btn small ghost${it.photo_id ? '' : ' hidden'}" id="iRotR" aria-label="Turn right">↻</button>
-        <button type="button" class="btn small ghost hidden" id="iAi">Fill in with AI</button>
-        <div class="muted small" id="iAiMsg" style="margin-top:6px">${isNew ? 'Add a photo and AI fills in the details.' : ''}</div>
-      </div>
+  const t = draft.taken || new Date();
+  const val = {
+    meal: v('meal') || mealByTime(v('time') || nowHHMM(t)), source: v('source') || 'homemade',
+    tags: [...(v('tags') || [])], rating: v('rating') === undefined || v('rating') === null ? '' : v('rating'),
+    people: [...(meal ? m.people || [] : draft.people)]
+  };
+  const photoSrc = draft.photo?.url;
+  openModal(`<h3>${meal ? 'Meal' : 'Check and save'}</h3>
+    ${photoSrc || m.photo_id || m.receipt_id ? `<div class="meal-photos">${photoSrc ? `<span class="ph meal-big has" style="background-image:url('${photoSrc}')"></span>` : m.photo_id ? `<span class="ph meal-big" data-photo="${esc(m.photo_id)}"><span class="ph-i">${mealIcon(m.meal)}</span></span>` : ''}
+      ${draft.receipt?.url ? `<span class="ph meal-rc has" style="background-image:url('${draft.receipt.url}')"></span>` : m.receipt_id ? `<span class="ph meal-rc" data-photo="${esc(m.receipt_id)}"><span class="ph-i">🧾</span></span>` : ''}</div>` : ''}
+    ${meal ? `<label class="snap-inline small"><input type="file" accept="image/*" id="fNewPhoto" hidden>${m.photo_id ? 'Change photo' : '📷 Add a photo'}</label>` : ''}
+    <label class="field"><span>What was it</span><input type="text" id="fName" value="${esc(v('name') || '')}" maxlength="80" placeholder="e.g. Beef pho with spring rolls"></label>
+    <div class="field"><span>Meal</span><div class="fchips wrap" id="fMeal">${MEALS.map(([k, l, i]) => `<button type="button" data-v="${k}" class="${val.meal === k ? 'on' : ''}">${i} ${l}</button>`).join('')}</div></div>
+    <div class="field"><span>From</span><div class="seg" id="fSource">${SOURCES.map(([k, l]) => `<button type="button" data-v="${k}" class="${val.source === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="two" id="fPlaceRow">
+      <label class="field"><span>Place</span><input type="text" id="fPlace" value="${esc(v('place') || '')}" maxlength="60" placeholder="Restaurant or store"></label>
+      <label class="field"><span>Cuisine</span><input type="text" id="fCuisine" value="${esc(v('cuisine') || '')}" maxlength="30" placeholder="e.g. vietnamese"></label>
     </div>
-    <label class="field hidden" id="iCutF"><span>Background</span>${cutSelectHtml('iCut', lsGet('homebase.cut', 'keep'))}</label>
-    ${isNew ? '' : itemStatusHtml(it)}
-    <label class="field"><span>Name</span><input type="text" id="iName" value="${esc(it.name)}" placeholder="Navy quarter-zip sweater"></label>
     <div class="two">
-      ${ps.length > 1 ? `<label class="field"><span>Belongs to</span><select id="iOwner">${ps.map(p => `<option value="${esc(p.id)}" ${it.owner === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
-      <label class="field"><span>Size</span><input type="text" id="iSize" value="${esc(it.size || '')}" placeholder="e.g. Age 7, M, 9"></label>
-      <label class="field"><span>Type</span><select id="iCat">${W_CATS.map(([v, l]) => `<option value="${v}" ${it.category === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="field"><span>Color</span><input type="text" id="iColor" value="${esc(it.color)}" placeholder="navy"></label>
-      <label class="field"><span>Warmth</span><select id="iWarm">${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${Number(it.warmth) === n ? 'selected' : ''}>${n} · ${W_WARMTH[n]}</option>`).join('')}</select></label>
-      <label class="field"><span>Dress code</span><select id="iForm">${W_FORMAL.map(([v, l]) => `<option value="${v}" ${it.formality === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="field"><span>Wears before wash</span><input type="number" min="1" max="60" id="iLimit" value="${it.wears_limit || 1}"></label>
-      <label class="field check-field"><span>Waterproof</span><input type="checkbox" id="iWater" ${it.waterproof ? 'checked' : ''}></label>
+      <label class="field"><span>Date</span><input type="date" id="fDate" value="${esc(v('date') || dayOf(t))}" max="${todayStr()}"></label>
+      <label class="field"><span>Time</span><input type="time" id="fTime" value="${esc(v('time') || (meal ? '' : nowHHMM(t)))}"></label>
     </div>
-    <label class="field"><span>Notes</span><input type="text" id="iNotes" value="${esc(it.notes || '')}" placeholder="scratchy wool, only dry days…"></label>
-    ${isNew ? '' : `<label class="field check-field row-field"><input type="checkbox" id="iRetired" ${it.active ? '' : 'checked'}><span>Retired (don't suggest or let me pick it)</span></label>`}
-    <div class="btn-row"><button class="btn primary" id="iSave">Save</button>${isNew ? '' : '<button class="btn danger" id="iDel">Delete</button>'}</div>`);
-  ensurePhotos();
-
-  const msg = t => { $('#iAiMsg').textContent = t; };
-  const showPhoto = p => {
-    const ph = $('#iPh');
-    ph.style.backgroundImage = `url("${p.url}")`; ph.classList.add('has'); ph.dataset.shown = '1'; ph.dataset.photo = '';
-  };
-  const fill = f => {
-    if (f.name) $('#iName').value = f.name;
-    if (f.category) $('#iCat').value = f.category;
-    if (f.color !== undefined) $('#iColor').value = f.color;
-    if (f.warmth) $('#iWarm').value = String(f.warmth);
-    if (f.formality) $('#iForm').value = f.formality;
-    if (f.wears_limit) { $('#iLimit').value = f.wears_limit; limitTouched = true; }
-    if (f.size && !$('#iSize').value.trim()) $('#iSize').value = f.size;
-    $('#iWater').checked = !!f.waterproof;
-    if (f.notes !== undefined) $('#iNotes').value = f.notes;
-  };
-  const runAi = async btn => {
-    if (!src) return toast('Add a photo first.', true);
-    msg('Looking at your photo…');
-    try {
-      const call = () => api('wardrobe.analyze', { photo: { data: src.data, mime: src.mime } });
-      const f = await (btn ? busy(btn, call) : call());
-      fill(f); msg('Filled in by AI. Check it, then save.');
-    } catch (e) { msg(''); fail(e); }
-  };
-  const runCut = async () => {
-    const mode = $('#iCut').value;
-    lsSet('homebase.cut', mode);
-    photo = src;
-    showPhoto(photo);
-    if (mode === 'keep') return;
-    try { photo = await applyCutout(src, mode, msg); showPhoto(photo); msg('Background removed. Not happy? Pick “Keep the photo as it is”.'); }
-    catch (e) { photo = src; showPhoto(photo); msg(''); fail(e); }
-  };
-  $('#iPick').onclick = () => $('#iFile').click();
-  $('#iFile').onchange = async e => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      src = await shrinkImage(file);
-      photo = src; showPhoto(photo);
-      $('#iAi').classList.remove('hidden'); $('#iRotL').classList.remove('hidden'); $('#iRotR').classList.remove('hidden'); $('#iCutF').classList.remove('hidden');
-      const cutting = $('#iCut').value !== 'keep';
-      const jobs = [];
-      if (cutting) jobs.push(runCut());
-      if (isNew && !$('#iName').value.trim()) jobs.push(runAi(null));
-      if (!jobs.length) msg('Photo ready. Tap “Fill in with AI” if you want it to describe the item.');
-      await Promise.all(jobs);
-    } catch (err) { fail(err); }
-  };
-  const turn = async deg => {
-    const cur = photo ? photo.url : photoMem.get(it.photo_id);
-    if (!cur) return toast('The photo is still loading. Try again in a moment.', true);
-    try {
-      photo = await rotateImage(cur, deg); showPhoto(photo);
-      if (src) src = await rotateImage(src.url, deg);
-    } catch (err) { fail(err); }
-  };
-  $('#iRotL').onclick = () => turn(270);
-  $('#iRotR').onclick = () => turn(90);
-  $('#iCut').onchange = () => { if (src) runCut(); };
-  $('#iAi').onclick = e => runAi(e.currentTarget);
-  $('#iLimit').oninput = () => { limitTouched = true; };
-  $('#iCat').onchange = () => { if (!limitTouched) $('#iLimit').value = W_DEFAULT_WEARS[$('#iCat').value] || 3; };
-
-  $('#iSave').onclick = e => {
-    const name = $('#iName').value.trim();
-    if (!name) return toast('Give it a name.', true);
-    const data = {
-      name, category: $('#iCat').value, color: $('#iColor').value.trim(), warmth: Number($('#iWarm').value),
-      formality: $('#iForm').value, waterproof: $('#iWater').checked, wears_limit: Number($('#iLimit').value) || 1,
-      notes: $('#iNotes').value.trim(), size: $('#iSize').value.trim(), needs_details: false,
-      owner: $('#iOwner')?.value || it.owner || 'me'
-    };
-    if (!isNew) { data.id = it.id; data.active = !$('#iRetired').checked; }
-    if (photo) data.photo = { data: photo.data, mime: photo.mime };
-    busy(e.currentTarget, async () => {
-      state.wardrobe = await api('wardrobe.save', data);
-      closeModal(); toast('Saved.');
-      if (location.hash === '#wardrobe') paintWardrobe();
-    }).catch(fail);
-  };
-  $('#iDel')?.addEventListener('click', e => {
-    if (!confirm(`Delete "${it.name}" and its photo?`)) return;
-    busy(e.currentTarget, async () => {
-      state.wsel.delete(it.id);
-      state.wardrobe = await api('wardrobe.delete', { id: it.id });
-      closeModal(); toast('Deleted.');
-      if (location.hash === '#wardrobe') paintWardrobe();
-    }).catch(fail);
+    ${ps.length > 1 ? `<div class="field"><span>Who ate</span><div class="fchips" id="fWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${val.people.includes(p.id) ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    <div class="two">
+      <label class="field"><span>Calories (about)</span><input type="number" id="fKcal" inputmode="numeric" value="${esc(v('calories') ?? '')}" min="0" max="5000"></label>
+      <label class="field"><span>Protein (g)</span><input type="number" id="fProt" inputmode="numeric" value="${esc(v('protein_g') ?? '')}" min="0" max="400"></label>
+    </div>
+    <label class="field"><span>Ingredients</span><input type="text" id="fIng" value="${esc((v('ingredients') || []).join(', '))}" placeholder="comma separated"></label>
+    <div class="field"><span>Tags</span><div class="fchips wrap" id="fTags">${[...new Set([...TAGS, ...val.tags])].map(tg => `<button type="button" data-v="${esc(tg)}" class="${val.tags.includes(tg) ? 'on' : ''}">${esc(tg)}</button>`).join('')}</div></div>
+    <div class="field"><span>How was it?</span><div class="seg" id="fRate"><button type="button" data-v="1" class="${val.rating === 1 ? 'on' : ''}">😋 Loved it</button><button type="button" data-v="0" class="${val.rating === 0 ? 'on' : ''}">🙂 Fine</button><button type="button" data-v="-1" class="${val.rating === -1 ? 'on' : ''}">😕 Not again</button></div></div>
+    <div class="two">
+      <label class="field"><span>Price</span><input type="number" id="fPrice" inputmode="decimal" step="0.01" value="${esc(v('price') ?? '')}" min="0"></label>
+      <label class="field"><span>Note</span><input type="text" id="fNote" value="${esc(v('note') || '')}" maxlength="300"></label>
+    </div>
+    ${pre.ai ? '<div class="muted small" style="margin:-4px 0 10px">Filled in by AI from the photo; calories are a rough guess. Fix anything that\'s off.</div>' : ''}
+    <div class="btn-row"><button class="btn primary" id="fSave">Save</button>${meal ? '<button class="btn ghost" id="fDel">Delete</button>' : ''}</div>`);
+  if (meal) ensurePhotos();
+  const single = (id, key, num) => $$(`#${id} [data-v]`).forEach(b => b.onclick = () => {
+    const on = !b.classList.contains('on') || id !== 'fRate';
+    $$(`#${id} [data-v]`).forEach(x => x.classList.remove('on'));
+    if (on) b.classList.add('on');
+    val[key] = on ? (num ? Number(b.dataset.v) : b.dataset.v) : '';
+    if (id === 'fSource') placeRow();
   });
-  $('#iWash')?.addEventListener('click', e => busy(e.currentTarget, async () => {
-    state.wardrobe = await api('wardrobe.laundry', { ids: [it.id] });
-    closeModal(); toast('Marked washed.');
-    if (location.hash === '#wardrobe') paintWardrobe();
-  }).catch(fail));
-  $('#iUndo')?.addEventListener('click', e => busy(e.currentTarget, async () => {
-    state.wardrobe = await api('wardrobe.unwear', { ids: [it.id], date: todayStr() });
-    state.wsel.delete(it.id);
-    closeModal(); toast('Removed from today.');
-    if (location.hash === '#wardrobe') paintWardrobe();
-  }).catch(fail));
-}
-
-function itemStatusHtml(it) {
-  const bits = [];
-  if (it.worn_today) bits.push('<button type="button" class="btn small" id="iUndo">Undo “worn today”</button>');
-  if (it.wears > 0) bits.push('<button type="button" class="btn small" id="iWash">Mark washed</button>');
-  const state_ = !it.active ? 'Retired' : it.dirty ? 'Needs washing' : it.worn_today ? 'Worn today' : it.needs_details ? 'Needs details' : 'Clean';
-  return `<div class="item-status"><div><b>${state_}</b> · ${it.wears}/${it.wears_limit} wears${it.last_worn ? ' · last worn ' + esc(rel(it.last_worn)) : ''}</div>${bits.length ? `<div class="btn-row" style="margin-top:8px">${bits.join('')}</div>` : ''}</div>`;
-}
-
-// --- collage: the chosen photos laid out on one picture (drawn on the phone, no AI) ---
-const CAT_ORDER = ['outerwear', 'top', 'dress', 'bottom', 'shoes', 'accessory', 'other'];
-
-// Where each piece goes on the picture. Clothes run top to bottom: tops/outerwear/dresses, bottoms, shoes
-// (several in one band sit side by side). Accessories (necklaces, bracelets, bags...) go in a column on the right.
-// Pure function, so it can be tested without a canvas.
-function collageSlots(items, W, H) {
-  const pad = 70, gap = 44;
-  const group = c => c === 'bottom' ? 1 : c === 'shoes' ? 2 : (c === 'accessory' || c === 'other') ? 3 : 0;
-  const weight = [1, 1.15, 0.6];
-  const side = items.filter(i => group(i.category) === 3);
-  const bands = [0, 1, 2].map(g => items.filter(i => group(i.category) === g)).map((list, g) => ({ list, w: weight[g] })).filter(b => b.list.length);
-  const slots = [];
-  const inner = H - 2 * pad, full = W - 2 * pad;
-  const sideW = side.length && bands.length ? Math.round((full - gap) * 0.3) : side.length ? full : 0;
-  const mainW = bands.length ? (side.length ? full - gap - sideW : full) : 0;
-  const layBand = (list, x, y, w, h) => {
-    const n = list.length, cols = n <= 3 ? n : n <= 6 ? 3 : 4, rows = Math.ceil(n / cols);
-    const cw = (w - gap * (cols - 1)) / cols, ch = (h - gap * (rows - 1)) / rows;
-    list.forEach((item, i) => {
-      const r = Math.floor(i / cols), inRow = Math.min(cols, n - r * cols), c = i % cols;
-      const x0 = x + (w - (inRow * cw + (inRow - 1) * gap)) / 2;
-      slots.push({ item, x: x0 + c * (cw + gap), y: y + r * (ch + gap), w: cw, h: ch });
-    });
-  };
-  if (bands.length) {
-    const usable = inner - gap * (bands.length - 1), total = bands.reduce((t, b) => t + b.w, 0);
-    let y = pad;
-    bands.forEach(band => { const h = usable * band.w / total; layBand(band.list, pad, y, mainW, h); y += h + gap; });
-  }
-  if (side.length) {
-    const x = pad + (bands.length ? mainW + gap : 0);
-    if (bands.length) {
-      // a tidy column; more than 4 accessories use two columns
-      const cols = side.length > 4 ? 2 : 1, rows = Math.ceil(side.length / cols);
-      const cw = (sideW - gap * (cols - 1)) / cols, ch = Math.min(260, (inner - gap * (rows - 1)) / rows);
-      const top = pad + (inner - (rows * ch + (rows - 1) * gap)) / 2;
-      side.forEach((item, i) => slots.push({ item, x: x + (i % cols) * (cw + gap), y: top + Math.floor(i / cols) * (ch + gap), w: cw, h: ch }));
-    } else layBand(side, x, pad, sideW, inner);
-  }
-  return slots;
-}
-
-function roundedRect(ctx, x, y, w, h, r) {
-  r = Math.min(r, w / 2, h / 2);
-  ctx.beginPath(); ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-}
-
-// A photo as something to draw: plain-background photos are cut out on the fly so the clothes
-// sit on the picture like a flat lay; if that isn't possible the photo is drawn as a neat card.
-async function collagePiece(url) {
-  const img = await loadImg(url);
-  if (!url.startsWith('data:image/png')) {
-    try {
-      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
-      const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
-      const res = flatCutout(cx.getImageData(0, 0, c.width, c.height));
-      if (res) {
-        cx.clearRect(0, 0, c.width, c.height);
-        cx.putImageData(new ImageData(res.data, res.width, res.height), 0, 0);
-        const t = trimToPng(c, 1000);
-        return { draw: t.canvas, w: t.canvas.width, h: t.canvas.height, card: false };
-      }
-    } catch { /* draw the photo as a card */ }
-    return { draw: img, w: img.width, h: img.height, card: true };
-  }
-  return { draw: img, w: img.width, h: img.height, card: false };
-}
-
-async function renderCollage(items) {
-  const W = 1080, H = 1350;
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const ctx = c.getContext('2d');
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#f8f4ed'); bg.addColorStop(1, '#ebe3d5');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  for (const s of collageSlots(items, W, H)) {
-    const u = photoMem.get(s.item.photo_id);
-    let piece = null;
-    if (u) { try { piece = await collagePiece(u); } catch { /* placeholder */ } }
-    ctx.save();
-    ctx.shadowColor = 'rgba(70, 52, 30, 0.30)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 12;
-    if (!piece) {
-      const w = s.w * 0.8, h = s.h * 0.8, x = s.x + (s.w - w) / 2, y = s.y + (s.h - h) / 2;
-      ctx.fillStyle = '#e6dccb'; roundedRect(ctx, x, y, w, h, 24); ctx.fill();
-      ctx.shadowColor = 'transparent'; ctx.fillStyle = '#7a6f60'; ctx.font = '30px system-ui, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText((s.item.name || '').slice(0, 24), x + w / 2, y + h / 2);
-    } else {
-      const inset = piece.card ? 22 : 8;
-      const k = Math.min((s.w - 2 * inset) / piece.w, (s.h - 2 * inset) / piece.h, 1.3);
-      const w = piece.w * k, h = piece.h * k, x = s.x + (s.w - w) / 2, y = s.y + (s.h - h) / 2;
-      if (piece.card) {
-        ctx.fillStyle = '#fff'; roundedRect(ctx, x - 14, y - 14, w + 28, h + 28, 26); ctx.fill();
-        ctx.shadowColor = 'transparent';
-        ctx.save(); roundedRect(ctx, x, y, w, h, 16); ctx.clip(); ctx.drawImage(piece.draw, x, y, w, h); ctx.restore();
-      } else ctx.drawImage(piece.draw, x, y, w, h);
-    }
-    ctx.restore();
-  }
-  return c.toDataURL('image/png');
-}
-async function openCollage(ids, opts = {}) {
-  const items = ids.map(wById).filter(Boolean).sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
-  if (items.length < 2) return toast('Pick at least two items.', true);
-  openModal('<h3>Collage</h3><div class="skeleton" style="height:260px"></div>');
-  try {
-    await ensurePhotos(items.map(i => i.photo_id));
-    const url = await renderCollage(items);
-    $('#modalBody').innerHTML = `<h3>Collage</h3><img class="collage" src="${url}" alt="Outfit collage">
-      <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="colShare">Share / save</button>${opts.noSave ? '' : '<button class="btn" id="colKeep">Save look</button>'}<button class="btn ghost" id="colClose">Close</button></div>`;
-    $('#colClose').onclick = closeModal;
-    const keep = $('#colKeep');
-    keep?.addEventListener('click', () => busy(keep, async () => {
-      await api('looks.save', { item_ids: items.map(i => i.id), date: todayStr() });
-      keep.textContent = 'Saved ✓'; keep.disabled = true;
-      toast('Saved to Past looks.');
-    }).catch(fail));
-    $('#colShare').onclick = async () => {
-      try {
-        const blob = await (await fetch(url)).blob();
-        const file = new File([blob], 'outfit.png', { type: 'image/png' });
-        if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: 'Outfit' });
-        else { const a = document.createElement('a'); a.href = url; a.download = 'outfit.png'; a.click(); }
-      } catch (e) { if (e.name !== 'AbortError') fail(e); }
-    };
-  } catch (e) { closeModal(); fail(e); }
-}
-
-// --- past looks: what was worn or saved. The AI learns from these (and from the 👍/👎). ---
-const RATE = { 1: '👍', '-1': '👎' };
-async function openHistory(pid) {
-  openModal(`<h3>Past looks${pid === 'me' ? '' : ' · ' + esc(personName(pid))}</h3><div class="skeleton" style="height:160px"></div>`);
-  try {
-    const list = await api('looks.list', { person: pid });
-    const shown = list.map(l => ({ ...l, items: (l.item_ids || []).map(wById).filter(Boolean) })).filter(l => l.items.length >= 2);
-    if (!shown.length) {
-      $('#modalBody').innerHTML = `<h3>Past looks</h3><div class="empty small">Nothing yet. Looks are remembered when you tap <b>Wear today</b> or <b>I'm wearing this</b> with two or more items, or <b>Save look</b> on a collage. Rate them 👍 or 👎 and the AI learns your taste.</div>
-        <div class="btn-row"><button class="btn primary" id="hClose">Close</button></div>`;
-      $('#hClose').onclick = closeModal; return;
-    }
-    $('#modalBody').innerHTML = `<h3>Past looks${pid === 'me' ? '' : ' · ' + esc(personName(pid))}</h3>
-      <div class="muted small" style="margin-bottom:8px">Tap one to see the collage. The AI uses these (and your 👍/👎) to pick outfits you'd like.</div>
-      <div class="looks">${shown.map(l => `<button type="button" class="look-row" data-look="${esc(l.id)}">
-        <span class="look-date">${esc(niceDate(l.date))}<br><span class="muted small">${l.worn ? (l.source === 'ai' ? 'AI pick, worn' : 'Worn') : 'Saved'}${l.rating ? ' ' + RATE[l.rating] : ''}</span></span>
-        <span class="look-thumbs">${l.items.slice(0, 5).map(i => `<span class="ph sm" data-photo="${esc(i.photo_id || '')}"></span>`).join('')}</span>
-      </button>`).join('')}</div>
-      <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="hClose">Close</button></div>`;
-    $('#hClose').onclick = closeModal;
-    ensurePhotos(shown.flatMap(l => l.items.slice(0, 5).map(i => i.photo_id)));
-    $$('#modalBody [data-look]').forEach(b => b.onclick = () => openLook(shown.find(l => l.id === b.dataset.look), pid));
-  } catch (e) { closeModal(); fail(e); }
-}
-
-async function openLook(look, pid) {
-  const items = look.items.slice().sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
-  openModal(`<h3>${esc(niceDate(look.date))}</h3><div class="skeleton" style="height:260px"></div>`);
-  try {
-    await ensurePhotos(items.map(i => i.photo_id));
-    const url = await renderCollage(items);
-    const paint = () => {
-      $('#modalBody').innerHTML = `<h3>${esc(niceDate(look.date))}</h3>
-        ${look.note ? `<div class="muted small">${esc(look.note)}</div>` : ''}
-        <img class="collage" src="${url}" alt="Collage">
-        <div class="btn-row rate-row"><button class="btn small ${look.rating === 1 ? 'primary' : ''}" data-rate="1" aria-label="Liked">👍 Liked</button><button class="btn small ${look.rating === -1 ? 'primary' : ''}" data-rate="-1" aria-label="Not for me">👎 Not for me</button></div>
-        <div class="btn-row" style="margin-top:10px"><button class="btn" id="lkWear">Wear again today</button><button class="btn ghost" id="lkDel">Delete</button><button class="btn ghost" id="lkBack">Back</button></div>`;
-      $$('#modalBody [data-rate]').forEach(b => b.onclick = () => busy(b, async () => {
-        const r = Number(b.dataset.rate) === look.rating ? 0 : Number(b.dataset.rate);
-        await api('looks.save', { id: look.id, rating: r, person: pid });
-        look.rating = r; paint();
-      }).catch(fail));
-      $('#lkWear').onclick = e => busy(e.currentTarget, async () => { await wearIds(items.map(i => i.id), todayStr(), { source: 'manual' }); closeModal(); }).catch(fail);
-      $('#lkDel').onclick = e => { if (confirm('Delete this look?')) busy(e.currentTarget, async () => { await api('looks.delete', { id: look.id }); openHistory(pid); }).catch(fail); };
-      $('#lkBack').onclick = () => openHistory(pid);
-    };
-    paint();
-  } catch (e) { closeModal(); fail(e); }
-}
-
-// Delegated clicks: work in the Today card, chat, and modals.
-document.addEventListener('click', e => {
-  const c = e.target.closest('[data-collage]');
-  if (c) { openCollage(c.dataset.ids.split(',').filter(Boolean)); return; }
-  const b = e.target.closest('[data-wear-outfit]');
-  if (!b) return;
-  const ids = b.dataset.ids.split(',').filter(Boolean);
-  busy(b, async () => {
-    const res = await wearIds(ids, b.dataset.date, { source: 'ai', note: b.dataset.note || '' });
-    $$(`[data-wear-outfit][data-date="${b.dataset.date}"]`).forEach(x => { x.outerHTML = '<span class="muted small wear-done">Logged as worn ✓</span>'; });
-    return res;
+  const placeRow = () => { $('#fPlace').closest('label').style.opacity = val.source === 'homemade' ? '.55' : '1'; };
+  single('fMeal', 'meal'); single('fSource', 'source'); single('fRate', 'rating', true);
+  placeRow();
+  $$('#fTags [data-v]').forEach(b => b.onclick = () => { b.classList.toggle('on'); val.tags = $$('#fTags [data-v].on').map(x => x.dataset.v); });
+  $$('#fWho [data-p]').forEach(b => b.onclick = () => { b.classList.toggle('on'); val.people = $$('#fWho [data-p].on').map(x => x.dataset.p); });
+  let newPhoto = null;
+  $('#fNewPhoto')?.addEventListener('change', async e => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try { newPhoto = await shrinkImage(file, PHOTO_MAX); toast('Photo will be saved with the meal.'); } catch (err) { fail(err); }
+  });
+  $('#fSave').onclick = e => busy(e.currentTarget, async () => {
+    const name = $('#fName').value.trim();
+    if (!name) throw new Error('Give it a name.');
+    const photo = newPhoto || draft.photo;
+    const saved = await api('meals.save', {
+      id: meal?.id, name, meal: val.meal, source: val.source, place: $('#fPlace').value.trim(), cuisine: $('#fCuisine').value.trim(),
+      date: $('#fDate').value || todayStr(), time: $('#fTime').value, people: val.people.length ? val.people : [myPersonId()],
+      calories: $('#fKcal').value, protein_g: $('#fProt').value, price: $('#fPrice').value, ingredients: $('#fIng').value,
+      tags: val.tags, rating: val.rating, note: $('#fNote').value.trim(), ai: !!pre.ai,
+      photo: photo ? { data: photo.data, mime: photo.mime } : undefined,
+      receipt: !meal && draft.receipt ? { data: draft.receipt.data, mime: draft.receipt.mime } : undefined
+    }, { timeoutMs: 60000 });
+    if (photo && saved.photo_id) { photoMem.set(saved.photo_id, photo.url); idbPut(saved.photo_id, photo.url); }
+    if (!meal && draft.receipt && saved.receipt_id) { photoMem.set(saved.receipt_id, draft.receipt.url); idbPut(saved.receipt_id, draft.receipt.url); }
+    closeModal();
+    upsertMeal(saved);
+    toast(meal ? 'Saved.' : `Logged ${mealLabel(saved.meal).toLowerCase()}.`);
   }).catch(fail);
-});
+  $('#fDel')?.addEventListener('click', e => {
+    if (!confirm(`Delete "${m.name}"?`)) return;
+    busy(e.currentTarget, async () => { await api('meals.delete', { id: m.id }); closeModal(); upsertMeal(m, true); }).catch(fail);
+  });
+}
+
+// --- "Guess what I want to eat": a few questions, then three ideas ---
+function openGuess(prev) {
+  const ps = people();
+  let saved = {};
+  try { saved = JSON.parse(lsGet('homebase.guess', '{}')) || {}; } catch { saved = {}; }
+  const a = prev || { people: [myPersonId()], where: saved.where || '', meal: mealByTime(), effort: saved.effort || 'normal', needs: [], note: '' };
+  openModal(`<h3>What are you in the mood for?</h3>
+    ${ps.length > 1 ? `<div class="field"><span>Who's eating?</span><div class="fchips" id="gWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${a.people.includes(p.id) ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><span>Where?</span><div class="where-grid" id="gWhere">${WHERE.map(([k, i, l]) => `<button type="button" data-v="${k}" class="${a.where === k ? 'on' : ''}"><span>${i}</span>${l}</button>`).join('')}</div></div>
+    <div class="field"><span>Which meal?</span><div class="fchips wrap" id="gMeal">${MEALS.filter(x => x[0] !== 'drink').map(([k, l, i]) => `<button type="button" data-v="${k}" class="${a.meal === k ? 'on' : ''}">${i} ${l}</button>`).join('')}</div></div>
+    <div class="field" id="gEffortF"><span>How much effort?</span><div class="seg" id="gEffort">${EFFORT.map(([k, l]) => `<button type="button" data-v="${k}" class="${a.effort === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="field"><span>Anything going on? <span class="muted">(pick any)</span></span><div class="fchips wrap" id="gNeeds">${NEEDS.map(([k, l]) => `<button type="button" data-v="${esc(k)}" class="${a.needs.includes(k) ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <label class="field"><span>Anything else? <span class="muted">(optional)</span></span><input type="text" id="gNote" value="${esc(a.note)}" maxlength="200" placeholder="e.g. have chicken and rice; nothing too spicy"></label>
+    <button class="btn primary block" id="gGo">Guess!</button>`);
+  const effortShow = () => { $('#gEffortF').hidden = !(a.where === 'home' || a.where === 'any' || !a.where); };
+  const one = (id, key) => $$(`#${id} [data-v]`).forEach(b => b.onclick = () => {
+    $$(`#${id} [data-v]`).forEach(x => x.classList.remove('on')); b.classList.add('on'); a[key] = b.dataset.v; effortShow();
+  });
+  one('gWhere', 'where'); one('gMeal', 'meal'); one('gEffort', 'effort');
+  effortShow();
+  $$('#gNeeds [data-v]').forEach(b => b.onclick = () => { b.classList.toggle('on'); a.needs = $$('#gNeeds [data-v].on').map(x => x.dataset.v); });
+  $$('#gWho [data-p]').forEach(b => b.onclick = () => { b.classList.toggle('on'); a.people = $$('#gWho [data-p].on').map(x => x.dataset.p); });
+  $('#gGo').onclick = () => {
+    a.note = $('#gNote').value.trim();
+    if (!a.where) return toast('Home, out, takeout, or surprise you?', true);
+    if (!a.people.length) a.people = [myPersonId()];
+    lsSet('homebase.guess', JSON.stringify({ where: a.where, effort: a.effort }));
+    runGuess(a, []);
+  };
+}
+
+async function runGuess(a, seen) {
+  openModal(`<h3>Thinking…</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Looking at what you've been eating${a.needs.length ? ' and ' + esc(a.needs.join(', ')) : ''}.</div></div>`);
+  let r;
+  try {
+    r = await api('meals.recommend', { people: a.people, where: a.where, meal: a.meal, effort: a.where === 'home' || a.where === 'any' ? a.effort : '', needs: a.needs, note: a.note, exclude: seen }, { timeoutMs: 90000 });
+  } catch (e) { closeModal(); return fail(e); }
+  if ($('#modal').hidden) return;   // closed while waiting
+  const ideas = r.ideas || [];
+  const whereIcon = w => (WHERE.find(x => x[0] === w) || WHERE[0])[1];
+  const whereText = x => x.where === 'home' ? 'Cook at home' : (x.place ? x.place : x.where === 'takeout' ? 'Takeout' : 'Eat out') + (x.cuisine ? ' · ' + x.cuisine : '');
+  openModal(`<h3>How about…</h3>
+    ${r.intro ? `<div class="muted small" style="margin:-4px 0 10px">${esc(r.intro)}</div>` : ''}
+    ${ideas.map((x, i) => `<div class="idea">
+      <div class="idea-head"><span class="idea-i">${whereIcon(x.where)}</span><div class="grow"><b>${esc(x.title)}</b><div class="muted small">${esc(whereText(x))}${x.est_calories ? ` · ~${x.est_calories} kcal` : ''}</div></div></div>
+      <div class="idea-why">${esc(x.why)}</div>
+      ${x.how ? `<div class="small idea-how">${esc(x.how)}</div>` : ''}
+      ${x.ingredients?.length ? `<div class="small muted">Need: ${esc(x.ingredients.join(', '))}</div>` : ''}
+      <button type="button" class="btn small" data-pick="${i}">I'll have this</button>
+    </div>`).join('') || '<div class="muted">No ideas came back. Try again.</div>'}
+    <div class="btn-row" style="margin-top:6px"><button class="btn" id="gMore">Other ideas</button><button class="btn ghost" id="gBack">Change answers</button></div>`);
+  $$('[data-pick]').forEach(b => b.onclick = () => {
+    const x = ideas[+b.dataset.pick];
+    openMealEditor(null, { name: x.title, meal: r.meal || a.meal, source: x.where === 'home' ? 'homemade' : x.where === 'takeout' ? 'takeout' : 'restaurant',
+      place: x.place, cuisine: x.cuisine, ingredients: x.ingredients, tags: x.tags, calories: x.est_calories, people: r.people || a.people, date: todayStr(), time: nowHHMM() });
+    toast('Tap Save when you eat it.');
+  });
+  $('#gMore').onclick = () => runGuess(a, [...seen, ...ideas.map(x => x.title)].slice(-12));
+  $('#gBack').onclick = () => openGuess(a);
+}
 
 // ================= HOME: quick box =================
 // Type or say what happened. If the assistant saved something and has no question, a short confirmation
@@ -1708,12 +997,11 @@ async function quickSend() {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
     const r = await api('chat.send', { message: text, shared, mode: 'quick' }, { timeoutMs: 120000 });
     state.chat = state.chat || [];
-    state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, outfit: r.outfit });
+    state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined });
     saveCache();
-    if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
     invalidate();
     if (viaMic) speak(r.reply);
-    if ((r.actions || []).length && !r.asked && !r.outfit) showLogged(r);
+    if ((r.actions || []).length && !r.asked && !r.charts?.length) showLogged(r);
     else { res.innerHTML = ''; location.hash = '#chat'; }
     refreshAll();
   } catch (e) {
@@ -1904,7 +1192,7 @@ async function takeShared() {
   return out;
 }
 
-const CHAT_CHIPS = ['What should I wear today?', "What's due this week?", 'What should I wear tomorrow?', 'Anything in my watched emails to act on?'];
+const CHAT_CHIPS = ['What should I eat?', "What's due this week?", 'What should I bring tomorrow?', 'Anything in my watched emails to act on?'];
 
 async function renderChat() {
   view.innerHTML = '<div class="chat" id="chatList"></div>';
@@ -1963,7 +1251,7 @@ async function renderChat() {
   // Saved conversation shows at once; the server copy is checked once per app start.
   const loadHistory = () => api('chat.history', { limit: 30 }).then(h => {
     state.chatFresh = true;
-    const fresh = h.map(m => ({ role: m.role, content: m.content }));
+    const fresh = h.map(m => ({ role: m.role, content: m.content, charts: Array.isArray(m.chart) && m.chart.length ? m.chart : undefined }));
     if (state.chat?.some(m => m.typing)) return;                // a reply is on its way; don't disturb
     state.chat = fresh; saveCache(); if (location.hash === '#chat') paintChat();
   });
@@ -1976,6 +1264,18 @@ async function renderChat() {
   if (pending) { sessionStorage.removeItem('homebase.pending'); sendChat(pending); }
 }
 
+// Charts in the chat are drawn by charts.js, loaded the first time one is shown.
+let chartsMod = null;
+function mountCharts(root) {
+  const slots = $$('.chart-slot', root);
+  if (!slots.length) return;
+  (chartsMod ||= import('./charts.js')).then(mod => slots.forEach(slot => {
+    const [i, j] = slot.dataset.chart.split(':').map(Number);
+    const spec = state.chat?.[i]?.charts?.[j];
+    if (spec) mod.renderChart(slot, spec);
+  })).catch(e => { console.warn(e); slots.forEach(s => { s.textContent = "Charts couldn't load. Check your connection."; }); });
+}
+
 function paintChat(loading = false) {
   const list = $('#chatList');
   if (!list) return;
@@ -1983,11 +1283,12 @@ function paintChat(loading = false) {
   const msgs = state.chat || [];
   list.innerHTML = (msgs.length ? '' : `<div class="empty"><div class="big">Hi! What's on your mind?</div>
       I know your tasks, calendar and the weather. You can also just tell me things you did.</div>`) +
-    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${m.outfit ? `<div class="chat-outfit">${outfitBody(m.outfit)}</div>` : ''}${m.role === 'assistant' && !m.typing && m.content && 'speechSynthesis' in window ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
+    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content && 'speechSynthesis' in window ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
   $$('[data-say]', list).forEach(b => b.onclick = () => speak((state.chat || [])[+b.dataset.say]?.content));
   if (isMember()) $$('.chat-chips .chip', list).forEach(c => { if (/email/i.test(c.textContent)) c.remove(); });
+  mountCharts(list);
   requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
 }
 
@@ -2006,10 +1307,9 @@ async function sendChat(text, viaMic = false) {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
     const r = await api('chat.send', { message: text, shared }, { timeoutMs: 120000 });
     state.chat.pop();
-    state.chat.push({ role: 'assistant', content: r.reply, outfit: r.outfit }); saveCache();
+    state.chat.push({ role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined }); saveCache();
     if (viaMic) speak(r.reply);
-    if (r.outfit && r.outfit.date === todayStr() && state.today) setOutfit(r.outfit.person || 'me', 'today', r.outfit);
-    invalidate(); // the assistant may have changed tasks, clothes or the calendar
+    invalidate(); // the assistant may have changed tasks, meals or the calendar
   } catch (e) {
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: '⚠️ ' + e.message });
@@ -2088,14 +1388,14 @@ async function paintFamily() {
     el.classList.toggle('muted', !list.length);
     el.innerHTML = list.length ? list.map(u => `<div class="fam-row${u.active ? '' : ' off'}">
         <div class="grow"><b>${esc(u.name)}</b>${u.active ? '' : ' <span class="muted small">(paused)</span>'}<br>
-          <span class="muted small">Wardrobe: ${esc(pname(u.person_id))} · ${u.last_seen ? 'last seen ' + esc(rel(u.last_seen.slice(0, 10))) : 'not signed in yet'} · alerts by ${esc(u.notifications)}</span></div>
+          <span class="muted small">Profile: ${esc(pname(u.person_id))} · ${u.last_seen ? 'last seen ' + esc(rel(u.last_seen.slice(0, 10))) : 'not signed in yet'} · alerts by ${esc(u.notifications)}</span></div>
         <div class="fam-acts"><button class="btn small ghost" data-uact="newcode" data-uid="${esc(u.id)}" data-name="${esc(u.name)}">New link</button>
           <button class="btn small ghost" data-uact="${u.active ? 'pause' : 'resume'}" data-uid="${esc(u.id)}">${u.active ? 'Pause' : 'Resume'}</button>
           <button class="btn small ghost" data-uact="remove" data-uid="${esc(u.id)}" data-name="${esc(u.name)}">Remove</button></div></div>`).join('')
       : 'Nobody yet. Tap “Invite someone”.';
     $$('#sFamily [data-uact]').forEach(b => b.onclick = () => {
       const id = b.dataset.uid, act = b.dataset.uact;
-      if (act === 'remove' && !confirm(`Remove ${b.dataset.name}? Their sign-in, chat and "Only me" tasks are deleted. Shared tasks and their wardrobe stay.`)) return;
+      if (act === 'remove' && !confirm(`Remove ${b.dataset.name}? Their sign-in, chat and "Only me" tasks are deleted. Shared tasks and meals stay.`)) return;
       busy(b, async () => {
         if (act === 'newcode') { const r = await api('users.newcode', { id }); showInviteLink(b.dataset.name, r.code); }
         else if (act === 'remove') await api('users.delete', { id });
@@ -2109,9 +1409,9 @@ function openInvite() {
   const ps = people().filter(p => p.id !== 'me');
   openModal(`<h3>Invite someone</h3>
     <label class="field"><span>Name</span><input type="text" id="invName" maxlength="30" placeholder="e.g. Alex"></label>
-    <label class="field"><span>Their wardrobe</span><select id="invWho">
-      <option value="new">New wardrobe (adult)</option><option value="new-child">New wardrobe (child)</option>
-      ${ps.map(p => `<option value="${esc(p.id)}">${esc(p.name)}'s wardrobe</option>`).join('')}</select></label>
+    <label class="field"><span>Who are they in the People list?</span><select id="invWho">
+      <option value="new">Add them (adult)</option><option value="new-child">Add them (child)</option>
+      ${ps.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
     <div class="muted small" style="margin-bottom:12px">They'll get their own sign-in link. You can pause or remove them anytime.</div>
     <button class="btn primary block" id="invGo">Create invite link</button>`);
   $('#invGo').onclick = e => {
@@ -2121,7 +1421,7 @@ function openInvite() {
     busy(e.currentTarget, async () => {
       const r = await api('users.invite', { name, person_id: who.startsWith('new') ? 'new' : who, kind: who === 'new-child' ? 'child' : 'adult' });
       if (state.settings) state.settings.people = JSON.stringify(r.people);
-      if (state.wardrobe) state.wardrobe.people = r.people;
+      if (state.today) state.today.people = r.people;
       invalidate(); refreshAll();
       showInviteLink(name, r.code);
       paintFamily();
@@ -2136,7 +1436,7 @@ function paintMemberSettings() {
     <div class="card">
       <h2>You</h2>
       <div>Signed in as <b>${esc(state.me?.name || '')}</b>.</div>
-      <div class="muted small" style="margin-top:6px">Tasks, the wardrobe and the family calendar are shared with the household. Your chat and your “Only me” tasks are private.</div>
+      <div class="muted small" style="margin-top:6px">Tasks, the food log and the family calendar are shared with the household. Your chat and your “Only me” tasks are private.</div>
       <button class="btn small ghost" id="sSignOut" style="margin-top:10px">Sign out of this phone</button>
     </div>
     ${voiceCardHtml()}
@@ -2216,7 +1516,7 @@ function paintServerSettings() {
     hours.map(h => `<option value="${h}" ${String(val) === String(h) ? 'selected' : ''}>${hour12(h).replace('a', ' am').replace('p', ' pm')}</option>`).join('');
   $('#serverSettings').innerHTML = `
     <div class="card">
-      <h2>Weather & outfits</h2>
+      <h2>Weather</h2>
       <div class="two">
         <label class="field"><span>Latitude</span><input type="text" id="sLat" value="${esc(s.latitude)}" inputmode="decimal"></label>
         <label class="field"><span>Longitude</span><input type="text" id="sLon" value="${esc(s.longitude)}" inputmode="decimal"></label>
@@ -2224,26 +1524,27 @@ function paintServerSettings() {
       <button class="btn small" id="sLoc" style="margin:-4px 0 12px">📍 Use my location</button>
       <div class="two">
         <label class="field"><span>Units</span><select id="sUnits"><option value="F" ${s.units !== 'C' ? 'selected' : ''}>°F</option><option value="C" ${s.units === 'C' ? 'selected' : ''}>°C</option></select></label>
-        <label class="field"><span>Indoor temp</span><input type="number" id="sIndoor" value="${esc(s.indoor_temp)}"></label>
+        <span></span>
       </div>
-      <label class="field"><span>Your clothes & style (optional)</span>
-        <textarea id="sClothes" rows="3" placeholder="e.g. I run cold. Mostly jeans, sweaters, a navy rain shell and a puffer. Office is business casual.">${esc(s.clothes_notes)}</textarea></label>
+      <div class="field"><span>Remind me to bring allergy medicine in</span>
+        <div class="months" id="sAllergy">${['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'].map((l, i) => `<button type="button" data-m="${i + 1}" class="${String(s.allergy_months || '').split(',').map(Number).includes(i + 1) ? 'on' : ''}" aria-label="${new Date(2026, i, 1).toLocaleDateString(undefined, { month: 'long' })}">${l}</button>`).join('')}</div>
+        <span class="muted small" style="display:block;margin-top:5px">Home and the morning brief say what to bring: a jacket, umbrella, sunglasses, and allergy medicine in these months (skipped on rainy days).</span></div>
     </div>
     <div class="card">
-      <h2>People & sizes</h2>
-      <div class="muted small" style="margin-bottom:8px">Each person gets their own wardrobe and outfit advice. For a child, set the current size so picks and shopping notes fit.</div>
+      <h2>People</h2>
+      <div class="muted small" style="margin-bottom:8px">Everyone in the household. Food notes (allergies, dislikes, goals) shape the meal ideas. For a child, the birth date and sex are used for growth charts.</div>
       <div id="sPeople"></div>
       <button type="button" class="btn small" id="sPeopleAdd">+ Add person</button>
     </div>
     <div class="card">
       <h2>Family</h2>
-      <div class="muted small" style="margin-bottom:8px">Invite family members to use this Homebase on their own phone. Tasks, the wardrobe and the calendars you mark "Family" are shared; their chat and "Only me" tasks stay private. Your email stays yours. Everyone gets their own notifications.</div>
+      <div class="muted small" style="margin-bottom:8px">Invite family members to use this Homebase on their own phone. Tasks, the food log and the calendars you mark "Family" are shared; their chat and "Only me" tasks stay private. Your email stays yours. Everyone gets their own notifications.</div>
       <div id="sFamily" class="muted small">Loading…</div>
       <button type="button" class="btn small" id="sInvite" style="margin-top:8px">+ Invite someone</button>
     </div>
     <div class="card">
       <h2>Calendars</h2>
-      <div class="muted small" style="margin-bottom:8px">Which calendars Homebase reads for Today, reminders and outfit advice. Shared calendars (like Family) appear here once they're in your Google Calendar.${(state.familyCount || 0) > 0 ? ' <b>Family</b> = family members can see it too.' : ''}</div>
+      <div class="muted small" style="margin-bottom:8px">Which calendars Homebase reads for Today, reminders and the morning brief. Shared calendars (like Family) appear here once they're in your Google Calendar.${(state.familyCount || 0) > 0 ? ' <b>Family</b> = family members can see it too.' : ''}</div>
       <div id="sCals" class="muted small">Loading calendars…</div>
       <label class="field hidden" id="sFamTargetF" style="margin-top:10px"><span>Events family members add go to</span><select id="sFamTarget"></select></label>
     </div>
@@ -2269,14 +1570,13 @@ function paintServerSettings() {
         <label class="field"><span>Morning brief</span><select id="sBrief">${hourOpts(s.brief_hour, true)}</select></label>
         <label class="field"><span>Evening check-in</span><select id="sEve">${hourOpts(s.evening_hour, true)}</select></label>
       </div>
-      <label class="field"><span>Tomorrow's outfits for everyone (made each night, with a collage in the app)</span><select id="sLooks">${hourOpts(s.looks_hour === undefined ? '21' : s.looks_hour, true)}</select></label>
       <button class="btn small" id="sTestN">Send test notification</button>
     </div>
     ${voiceCardHtml()}
     <div class="card">
       <h2>Assistant</h2>
       <label class="field"><span>About your household (the AI uses this)</span>
-        <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. I prefer comfortable, simple clothes.">${esc(s.about_me)}</textarea></label>
+        <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. We eat dinner around 6:30 and cook most weeknights.">${esc(s.about_me)}</textarea></label>
       <div class="field"><span>Watch these emails (blank = email reading off)</span>
         <details class="why watch" id="sWatch">
           <summary id="sWatchSum"></summary>
@@ -2294,15 +1594,12 @@ function paintServerSettings() {
           <option value="gemini" ${s.ai_provider === 'gemini' ? 'selected' : ''}>Gemini (free tier)</option></select></label>
         <div class="two">
           <label class="field"><span>Claude everyday model</span><input type="text" id="sClaudeMain" value="${esc(s.claude_model_main || 'claude-haiku-5-5')}"></label>
-          <label class="field"><span>Claude outfit model</span><input type="text" id="sClaudeSmart" value="${esc(s.claude_model_smart || 'claude-haiku-5-5')}"></label>
+          <label class="field"><span>Claude food ideas model</span><input type="text" id="sClaudeSmart" value="${esc(s.claude_model_smart || 'claude-haiku-5-5')}"></label>
         </div>
-        <div class="muted small" style="margin:0 0 8px">With a Gemini key too, Gemini takes over automatically if Claude fails (for example, out of credit). Gemini "auto" picks the newest free models: Flash-Lite for everyday work, Flash for outfits.</div>
-        <label class="field"><span>Outfit picks you ask for</span><select id="sOutfitMode">
-          <option value="best" ${s.outfit_mode !== 'fast' ? 'selected' : ''}>Best: smarter model (about 15–40 s; a quick pick shows meanwhile)</option>
-          <option value="fast" ${s.outfit_mode === 'fast' ? 'selected' : ''}>Fast: lighter model (about 4–10 s)</option></select></label>
+        <div class="muted small" style="margin:0 0 8px">With a Gemini key too, Gemini takes over automatically if Claude fails (for example, out of credit). Gemini "auto" picks the newest free models: Flash-Lite for everyday work, Flash for food ideas.</div>
         <div class="two">
           <label class="field"><span>Gemini everyday model</span><input type="text" id="sModelMain" value="${esc(s.model_main || 'auto')}"></label>
-          <label class="field"><span>Gemini outfit model</span><input type="text" id="sModelSmart" value="${esc(s.model_smart || 'auto')}"></label>
+          <label class="field"><span>Gemini food ideas model</span><input type="text" id="sModelSmart" value="${esc(s.model_smart || 'auto')}"></label>
         </div>
         <div id="sUsage" class="muted small">Loading usage…</div>
       </details>
@@ -2328,28 +1625,31 @@ function paintServerSettings() {
   const plist = parsePeople(s.people).map(p => ({ ...p }));
   const paintPeople = () => {
     $('#sPeople').innerHTML = plist.map((p, i) => `<div class="person-row" data-i="${i}">
-      <div class="two">
-        <label class="field"><span>${i === 0 ? 'You' : 'Name'}</span><input type="text" data-f="name" value="${esc(p.name)}" maxlength="30"></label>
-        <label class="field"><span>Current size</span><input type="text" data-f="size" value="${esc(p.size || '')}" placeholder="${p.kind === 'child' ? 'e.g. age 7' : 'e.g. M'}" maxlength="20"></label>
-      </div>
+      <label class="field"><span>${i === 0 ? 'You' : 'Name'}</span><input type="text" data-f="name" value="${esc(p.name)}" maxlength="30"></label>
       ${i === 0 ? '' : `<div class="row"><div class="seg grow"><button type="button" data-f="kind" data-v="adult" class="${p.kind !== 'child' ? 'on' : ''}">Adult</button><button type="button" data-f="kind" data-v="child" class="${p.kind === 'child' ? 'on' : ''}">Child</button></div>
         <button type="button" class="x" data-rmp="${i}" aria-label="Remove ${esc(p.name)}">✕</button></div>`}
-      <label class="field"><span>Notes (optional)</span><input type="text" data-f="notes" value="${esc(p.notes || '')}" placeholder="${p.kind === 'child' ? 'e.g. grows fast, hates itchy sweaters' : 'style, fit, what you avoid'}" maxlength="400"></label>
+      ${p.kind === 'child' ? `<div class="two">
+        <label class="field"><span>Birth date</span><input type="date" data-f="birthdate" value="${esc(p.birthdate || '')}" max="${todayStr()}"></label>
+        <label class="field"><span>Sex (for growth charts)</span><select data-f="sex"><option value="">—</option><option value="female" ${p.sex === 'female' ? 'selected' : ''}>Girl</option><option value="male" ${p.sex === 'male' ? 'selected' : ''}>Boy</option></select></label>
+      </div>` : ''}
+      <label class="field"><span>Food notes (optional)</span><input type="text" data-f="notes" value="${esc(p.notes || '')}" placeholder="${p.kind === 'child' ? 'e.g. peanut allergy, picky about vegetables' : 'e.g. losing weight, no mushrooms, lactose-free'}" maxlength="400"></label>
     </div>`).join('');
     $('#sPeopleAdd').hidden = plist.length >= 6;
   };
-  $('#sPeople').addEventListener('input', e => {
+  const onPeopleField = e => {
     const row = e.target.closest('[data-i]'); const f = e.target.dataset.f;
     if (row && f && f !== 'kind') plist[+row.dataset.i][f] = e.target.value;
-  });
+  };
+  $('#sPeople').addEventListener('input', onPeopleField);
+  $('#sPeople').addEventListener('change', onPeopleField);
   $('#sPeople').addEventListener('click', e => {
     const k = e.target.closest('button[data-f="kind"]');
     if (k) { plist[+k.closest('[data-i]').dataset.i].kind = k.dataset.v; paintPeople(); return; }
     const r = e.target.closest('[data-rmp]');
-    if (r && confirm(`Remove ${plist[+r.dataset.rmp].name}? Their clothes stay in the sheet but are hidden.`)) { plist.splice(+r.dataset.rmp, 1); paintPeople(); }
+    if (r && confirm(`Remove ${plist[+r.dataset.rmp].name}? Their meals stay in the log.`)) { plist.splice(+r.dataset.rmp, 1); paintPeople(); }
   });
   $('#sPeopleAdd').onclick = () => {
-    if (plist.length < 6) plist.push({ id: 'p' + Math.random().toString(36).slice(2, 8), name: '', kind: 'child', size: '', notes: '' });
+    if (plist.length < 6) plist.push({ id: 'p' + Math.random().toString(36).slice(2, 8), name: '', kind: 'child', notes: '' });
     paintPeople();
   };
   paintPeople();
@@ -2362,7 +1662,7 @@ function paintServerSettings() {
   api('usage').then(u => {
     const el = $('#sUsage'); if (!el) return;
     const rows = Object.entries(u.calls || {});
-    el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (outfits).<br>` +
+    el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (food ideas).<br>` +
       (rows.length ? 'Requests today: ' + rows.map(([m, n]) => `${esc(m)} ${n}`).join(' · ') : 'No AI requests yet today.') +
       (u.cost_month ? `<br>Claude this month: about <b>$${u.cost_month.usd.toFixed(2)}</b> (${Math.round(u.cost_month.tokens / 1000)}k tokens, estimate). Your real bill is at console.anthropic.com.` : '<br>Your exact free limits are listed in Google AI Studio.');
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
@@ -2380,6 +1680,7 @@ function paintServerSettings() {
     }
   }).catch(e => { $('#sCals') && ($('#sCals').textContent = 'Could not load calendars: ' + e.message); });
 
+  $$('#sAllergy [data-m]').forEach(b => b.onclick = () => b.classList.toggle('on'));
   $('#sLoc').onclick = e => {
     const btn = e.currentTarget;
     if (!navigator.geolocation) return toast('Location not available.', true);
@@ -2434,10 +1735,10 @@ function paintServerSettings() {
       ai_provider: $('#sProvider').value,
       claude_model_main: $('#sClaudeMain').value.trim() || 'claude-haiku-5-5', claude_model_smart: $('#sClaudeSmart').value.trim() || 'claude-haiku-5-5',
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
-      indoor_temp: $('#sIndoor').value, clothes_notes: $('#sClothes').value.trim(),
-      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, looks_hour: $('#sLooks').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
+      allergy_months: $$('#sAllergy [data-m].on').map(b => Number(b.dataset.m)),
+      brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
       about_me: $('#sAbout').value.trim(), email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
-      outfit_mode: $('#sOutfitMode').value, model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
+      model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       people: plist.map(p => ({ ...p, name: String(p.name || '').trim() || 'Person' })),
       app_url: location.origin + location.pathname
     });
