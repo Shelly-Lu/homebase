@@ -904,7 +904,7 @@ function tasteFlush() {
 const thumbUrl = (u, size) => (u ? u + '/' + size : '');
 async function openTasteQuiz(person) {
   const ps = people();
-  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Getting dishes…</div></div>`);
+  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Getting dishes… (the very first time takes about 10 seconds)</div></div>`);
   let r;
   try { r = await api('taste.deck', { person, size: 100 }, { timeoutMs: 60000 }); }
   catch (e) { closeModal(); return fail(e); }

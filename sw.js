@@ -1,6 +1,6 @@
 // Service worker: the app's own files are served from the phone straight away (instant start, works offline),
 // and a fresh copy is fetched in the background, so an update shows up the next time the app is opened.
-const VERSION = 'homebase-v34';
+const VERSION = 'homebase-v35';
 const SHARE_CACHE = 'homebase-share';   // things shared into Homebase wait here until the app picks them up
 const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './charts.js'];
