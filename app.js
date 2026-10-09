@@ -85,7 +85,7 @@ const FRESH_MS = 60 * 1000;
 const cached = loadSaved(CACHE_KEY) || {};
 const state = {
   today: cached.today || loadSaved('homebase.today'),
-  tasks: cached.tasks || null, wardrobe: cached.wardrobe || null, looks: cached.looks || null,
+  tasks: cached.tasks || null, wardrobe: cached.wardrobe || null, looks: cached.looks || null, journal: cached.journal || null,
   chat: cached.chat || null, settings: null, fetchedAt: {},
   me: cached.me || null          // {id, name, role: 'owner'|'member', person_id}
 };
@@ -116,14 +116,14 @@ function parseInvite(text) {
 // Clears everything saved on this phone for the previous person (used when signing in as someone else).
 function forgetLocalData() {
   try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('homebase.today'); localStorage.removeItem('homebase.person'); } catch { /* ignore */ }
-  state.today = state.tasks = state.wardrobe = state.looks = state.chat = state.me = null;
+  state.today = state.tasks = state.wardrobe = state.looks = state.chat = state.me = state.journal = null;
   state.fetchedAt = {}; state.chatFresh = false;
 }
 let saveTimer = null;
 function saveCache() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, wardrobe: state.wardrobe, looks: state.looks, journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
     catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
   }, 250);
 }
@@ -184,7 +184,7 @@ function repaintIfIdle() {
   if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && view.contains(ae)) return;
   const tab = currentTab();
   if (tab === 'today') paintToday();
-  else if (tab === 'tasks') paintTasks();
+  else if (tab === 'tasks' && state.taskView !== 'log') paintTasks();
   else if (tab === 'wardrobe') paintWardrobe();
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && isStale('today')) refreshAll(); });
@@ -563,24 +563,128 @@ function bindTaskRows(root, after) {
 }
 
 async function renderTasks() {
+  if (state.taskView === 'log') return renderLog();
   view.innerHTML = state.tasks ? '' : '<div class="card"><div class="skeleton" style="height:200px"></div></div>';
   if (state.tasks) paintTasks();
   if (isStale('tasks')) refreshAll();
 }
+// To do | Log switch at the top of the Tasks tab
+function taskTabsHtml() {
+  const v = state.taskView === 'log' ? 'log' : 'todo';
+  return `<div class="seg task-seg" id="taskSeg"><button type="button" data-v="todo" class="${v === 'todo' ? 'on' : ''}">To do</button><button type="button" data-v="log" class="${v === 'log' ? 'on' : ''}">Log</button></div>`;
+}
+function bindTaskTabs() {
+  $$('#taskSeg button').forEach(b => b.onclick = () => { state.taskView = b.dataset.v; lsSet('homebase.taskView', b.dataset.v); renderTasks(); });
+}
 function paintTasks() {
+  if (state.taskView === 'log') return paintLog();
   saveCache();
   const all = state.tasks || [];
-  const groups = [
-    ['Needs attention', all.filter(t => ['overdue', 'today'].includes(t.state))],
-    ['Coming up', all.filter(t => t.state === 'soon')],
-    ['Recurring', all.filter(t => t.state === 'later' && t.interval_days)],
-    ['To-dos', all.filter(t => !t.interval_days && t.state !== 'overdue' && t.state !== 'today' && t.state !== 'soon')]
-  ];
-  view.innerHTML = all.length ? groups.filter(g => g[1].length).map(([name, list]) =>
-    `<div class="section-title">${name}<span>${list.length}</span></div><div class="card">${list.map(taskRow).join('')}</div>`).join('')
-    : `<div class="empty"><div class="big">No tasks yet</div>Add one with +, or just tell the chat:<br>“I clipped the cat's claws today.”</div>`;
+  // Only what's coming up is shown; everything further out waits, folded away, under "Later".
+  const WIN = 7;
+  const attention = all.filter(t => t.days_until !== null && t.days_until <= 0);
+  const upcoming = all.filter(t => t.days_until !== null && t.days_until > 0 && t.days_until <= WIN);
+  const later = all.filter(t => t.days_until === null || t.days_until > WIN);
+  const section = (name, list) => `<div class="section-title">${name}<span>${list.length}</span></div><div class="card">${list.map(taskRow).join('')}</div>`;
+  view.innerHTML = taskTabsHtml() + (!all.length
+    ? `<div class="empty"><div class="big">No tasks yet</div>Add one with +, or just tell Homebase:<br>“remind me to renew the passport in December”.</div>`
+    : (attention.length ? section('Needs attention', attention) : '') +
+      (upcoming.length ? section('Next 7 days', upcoming) : '') +
+      (!attention.length && !upcoming.length ? '<div class="empty small">Nothing due in the next 7 days. 🎉</div>' : '') +
+      (later.length ? `<details class="later" id="laterBox" ${state.laterOpen ? 'open' : ''}>
+          <summary><span>Later</span><span class="muted small">${later.length} task${later.length > 1 ? 's' : ''}, next ${later[0].next_due ? esc(rel(later[0].next_due)) : '—'}</span></summary>
+          <div class="card">${later.map(taskRow).join('')}</div></details>` : ''));
+  $('#laterBox')?.addEventListener('toggle', e => { state.laterOpen = e.target.open; });
+  bindTaskTabs();
   bindTaskRows(view, () => renderTasks());
   addFab(() => openTaskEditor(null, () => renderTasks()));
+}
+
+// ---------------- Log: everything that happened (the Journal) ----------------
+state.taskView = (() => { try { return localStorage.getItem('homebase.taskView') || 'todo'; } catch { return 'todo'; } })();
+state.logQuery = '';
+const LOG_CATS = ['health', 'kids', 'school', 'pets', 'home', 'car', 'money', 'food', 'other'];
+async function renderLog() {
+  paintLog();
+  if (!state.journal || isStale('journal')) {
+    try {
+      state.journal = await api('journal.list', { limit: 300 });
+      state.fetchedAt.journal = Date.now(); saveCache();
+      if (location.hash === '#tasks' && state.taskView === 'log' && $('#modal').hidden) paintLog(true);
+    } catch (e) { if (!state.journal) fail(e); }
+  }
+}
+function paintLog(keepSearch) {
+  const list = state.journal;
+  const q = state.logQuery.trim().toLowerCase();
+  const shown = (list || []).filter(r => !q || (r.text + ' ' + r.category + ' ' + r.people + ' ' + r.date).toLowerCase().includes(q));
+  const prevFocus = document.activeElement?.id === 'logQ';
+  const html = `${taskTabsHtml()}
+    <label class="field log-search"><input type="search" id="logQ" placeholder="Search the log… (fever, oil change, 身高)" value="${esc(state.logQuery)}" autocomplete="off"></label>
+    ${!list ? '<div class="card"><div class="skeleton" style="height:160px"></div></div>'
+      : !list.length ? `<div class="empty"><div class="big">Nothing logged yet</div>Tell Homebase what happened, on Home or in Chat:<br>“Drey had a fever of 101 last night”, “oil change at 45,000 miles, $89”.<br>Ask later: “when was the last oil change?”</div>`
+      : !shown.length ? '<div class="empty small">No records match. Try fewer words, or ask the chat.</div>'
+      : groupByMonth(shown).map(([month, rows]) => `<div class="section-title">${esc(month)}<span>${rows.length}</span></div>
+          <div class="card">${rows.map(logRow).join('')}</div>`).join('')}`;
+  view.innerHTML = html;
+  bindTaskTabs();
+  const qi = $('#logQ');
+  qi.addEventListener('input', () => { state.logQuery = qi.value; paintLog(true); });
+  if (keepSearch && prevFocus) { qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); }
+  $$('[data-log]').forEach(el => el.onclick = () => openLogEditor((state.journal || []).find(r => r.id === el.dataset.log)));
+  addFab(() => openLogEditor(null));
+}
+function groupByMonth(rows) {
+  const out = [];
+  rows.forEach(r => {
+    const m = new Date(r.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const last = out[out.length - 1];
+    if (last && last[0] === m) last[1].push(r); else out.push([m, [r]]);
+  });
+  return out;
+}
+function logRow(r) {
+  return `<div class="list-row log-row tap" data-log="${esc(r.id)}">
+    <div class="log-date">${esc(niceDate(r.date))}${r.time ? `<br><span class="muted small">${esc(time12(r.time))}</span>` : ''}</div>
+    <div class="grow"><div>${r.private ? '<span class="lock">🔒</span> ' : ''}${esc(r.text)}</div>
+      ${r.category || r.people ? `<div class="meta">${[r.category, r.people].filter(Boolean).map(esc).join(' · ')}</div>` : ''}</div>
+  </div>`;
+}
+function openLogEditor(r) {
+  const isNew = !r;
+  r = r || { text: '', date: todayStr(), category: '', people: '', private: false, user: state.me?.id || 'owner' };
+  const mine = (r.user || 'owner') === (state.me?.id || 'owner');
+  const canDelete = !isNew && (mine || !isMember());
+  openModal(`<h3>${isNew ? 'Log something' : 'Record'}</h3>
+    <label class="field"><span>What happened</span><textarea id="lgText" rows="3" placeholder="e.g. Drey's height 128 cm at the checkup">${esc(r.text)}</textarea></label>
+    <div class="two">
+      <label class="field"><span>Date</span><input type="date" id="lgDate" value="${esc(r.date)}"></label>
+      <label class="field"><span>Category</span><input type="text" id="lgCat" list="lgCats" value="${esc(r.category || '')}"><datalist id="lgCats">${LOG_CATS.map(c => `<option>${c}</option>`).join('')}</datalist></label>
+    </div>
+    <label class="field"><span>About (optional)</span><input type="text" id="lgPeople" value="${esc(r.people || '')}" placeholder="e.g. Drey"></label>
+    ${mine ? `<label class="field check-field row-field"><input type="checkbox" id="lgPrivate" ${r.private ? 'checked' : ''}><span>Only me <span class="muted small">(hidden from the rest of the family)</span></span></label>` : ''}
+    <div class="btn-row"><button class="btn primary" id="lgSave">Save</button>${canDelete ? '<button class="btn danger" id="lgDel">Delete</button>' : ''}</div>`);
+  if (isNew) setTimeout(() => $('#lgText')?.focus(), 50);
+  $('#lgSave').onclick = e => {
+    const text = $('#lgText').value.trim();
+    if (!text) return toast('Write what happened.', true);
+    const data = { text, date: $('#lgDate').value || todayStr(), category: $('#lgCat').value.trim(), people: $('#lgPeople').value.trim() };
+    if (!isNew) data.id = r.id;
+    if ($('#lgPrivate')) data.private = $('#lgPrivate').checked;
+    busy(e.currentTarget, async () => {
+      const saved = await api('journal.save', data);
+      state.journal = [saved, ...(state.journal || []).filter(x => x.id !== saved.id)].sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+      saveCache(); closeModal(); toast('Saved.'); paintLog();
+    }).catch(fail);
+  };
+  $('#lgDel')?.addEventListener('click', e => {
+    if (!confirm('Delete this record?')) return;
+    busy(e.currentTarget, async () => {
+      await api('journal.delete', { id: r.id });
+      state.journal = (state.journal || []).filter(x => x.id !== r.id);
+      saveCache(); closeModal(); paintLog();
+    }).catch(fail);
+  });
 }
 
 function addFab(onClick) {
