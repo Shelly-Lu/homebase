@@ -14,7 +14,12 @@ function toast(msg, isErr = false) {
   t.textContent = msg; t.className = 'toast' + (isErr ? ' err' : ''); t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), isErr ? 5000 : 2600);
 }
-const fail = e => { console.error(e); toast(e.message || String(e), true); };
+const fail = e => {
+  console.error(e);
+  const m = e.message || String(e);
+  // the app on GitHub is newer than the Apps Script web app
+  toast(/^Unknown action/.test(m) ? 'The backend is older than the app. In Apps Script, paste the latest backend files, then Deploy → Manage deployments → edit → New version.' : m, true);
+};
 
 function openModal(html) {
   $('#modalBody').innerHTML = html;
