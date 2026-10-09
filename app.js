@@ -570,6 +570,7 @@ async function renderTasks() {
 }
 // To do | Log switch at the top of the Tasks tab
 function taskTabsHtml() {
+  return '';   // the Log lives in the spreadsheet's Journal tab; the assistant searches it
   const v = state.taskView === 'log' ? 'log' : 'todo';
   return `<div class="seg task-seg" id="taskSeg"><button type="button" data-v="todo" class="${v === 'todo' ? 'on' : ''}">To do</button><button type="button" data-v="log" class="${v === 'log' ? 'on' : ''}">Log</button></div>`;
 }
@@ -580,28 +581,31 @@ function paintTasks() {
   if (state.taskView === 'log') return paintLog();
   saveCache();
   const all = state.tasks || [];
-  // Only what's coming up is shown; everything further out waits, folded away, under "Later".
-  const WIN = 7;
+  // Shown: overdue, today and tomorrow. Folded: the rest of this week and next. Further out stays in the spreadsheet.
+  const by = (lo, hi) => all.filter(t => t.days_until !== null && t.days_until >= lo && t.days_until <= hi);
   const attention = all.filter(t => t.days_until !== null && t.days_until <= 0);
-  const upcoming = all.filter(t => t.days_until !== null && t.days_until > 0 && t.days_until <= WIN);
-  const later = all.filter(t => t.days_until === null || t.days_until > WIN);
+  const tomorrow = by(1, 1), week = by(2, 7), twoWeeks = by(8, 14);
+  const beyond = all.filter(t => t.days_until === null || t.days_until > 14).length;
+  state.taskFolds = state.taskFolds || {};
   const section = (name, list) => `<div class="section-title">${name}<span>${list.length}</span></div><div class="card">${list.map(taskRow).join('')}</div>`;
+  const fold = (key, name, list) => list.length ? `<details class="later" data-fold="${key}" ${state.taskFolds[key] ? 'open' : ''}>
+      <summary><span>${name}</span><span class="muted small">${list.length} task${list.length > 1 ? 's' : ''}</span></summary>
+      <div class="card">${list.map(taskRow).join('')}</div></details>` : '';
   view.innerHTML = taskTabsHtml() + (!all.length
     ? `<div class="empty"><div class="big">No tasks yet</div>Add one with +, or just tell Homebase:<br>“remind me to renew the passport in December”.</div>`
     : (attention.length ? section('Needs attention', attention) : '') +
-      (upcoming.length ? section('Next 7 days', upcoming) : '') +
-      (!attention.length && !upcoming.length ? '<div class="empty small">Nothing due in the next 7 days. 🎉</div>' : '') +
-      (later.length ? `<details class="later" id="laterBox" ${state.laterOpen ? 'open' : ''}>
-          <summary><span>Later</span><span class="muted small">${later.length} task${later.length > 1 ? 's' : ''}, next ${later[0].next_due ? esc(rel(later[0].next_due)) : '—'}</span></summary>
-          <div class="card">${later.map(taskRow).join('')}</div></details>` : ''));
-  $('#laterBox')?.addEventListener('toggle', e => { state.laterOpen = e.target.open; });
+      (tomorrow.length ? section('Tomorrow', tomorrow) : '') +
+      (!attention.length && !tomorrow.length ? '<div class="empty small">Nothing due today or tomorrow. 🎉</div>' : '') +
+      fold('week', 'Next 7 days', week) + fold('two', 'Next 14 days', twoWeeks) +
+      (beyond ? `<div class="muted small" style="margin:12px 4px">+${beyond} more after that, in the spreadsheet's Tasks tab. Ask Homebase anytime, e.g. “what's due next month?”</div>` : ''));
+  $$('details[data-fold]').forEach(d => d.addEventListener('toggle', () => { state.taskFolds[d.dataset.fold] = d.open; }));
   bindTaskTabs();
   bindTaskRows(view, () => renderTasks());
   addFab(() => openTaskEditor(null, () => renderTasks()));
 }
 
 // ---------------- Log: everything that happened (the Journal) ----------------
-state.taskView = (() => { try { return localStorage.getItem('homebase.taskView') || 'todo'; } catch { return 'todo'; } })();
+state.taskView = 'todo';
 state.logQuery = '';
 const LOG_CATS = ['health', 'kids', 'school', 'pets', 'home', 'car', 'money', 'food', 'other'];
 async function renderLog() {
