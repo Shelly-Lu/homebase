@@ -32,6 +32,8 @@ Everything runs on free tiers: Apps Script, Google Sheets, GitHub Pages, Open-Me
 
 Gemini's free tier gives each model its own daily request limit. The cheaper **Flash-Lite** models get a large daily quota; the smarter **Flash** models get a small one (recently around 20 requests a day). So Homebase splits the work:
 
+> **With a Claude key (your setup), everything below runs on Claude Haiku 5.5**: chat, reading meal photos and receipts, food ideas, email. Gemini is only used if you also keep a `GEMINI_API_KEY`, and then only as a backup when a Claude request fails (for example, out of credit). Remove that key, or set Settings → AI models → *AI provider* to Claude, to never use Gemini. The table is for the free Gemini-only setup.
+
 | Job | Model | Typical requests/day |
 |---|---|---|
 | Chat, logging tasks, AI intervals, email reading | **Flash-Lite** (everyday model) | 5–40 |
@@ -65,7 +67,7 @@ The models are set in Settings → *AI models, usage & cost* (default `claude-ha
 1. Create a new Google Sheet named **Homebase**.
 2. **Extensions → Apps Script**. Delete the default `Code.gs`.
 3. For each file in `backend/`, click **+ → Script**, use the same name (without `.gs`), and paste the contents:
-   `Config`, `Sheets`, `Tasks`, `AI`, `Weather`, `People`, `Food`, `Calendar`, `Email`, `Notify`, `Api`, `Charts`, `GrowthData`.
+   `Config`, `Sheets`, `Tasks`, `AI`, `Weather`, `People`, `Food`, `Taste`, `Calendar`, `Email`, `Notify`, `Api`, `Charts`, `GrowthData`.
 4. **Project Settings (gear icon)**:
    - Tick **Show "appsscript.json" manifest file in editor**, then open `appsscript.json` in the editor and replace it with `backend/appsscript.json`. Change `"timeZone"` if you aren't on US Eastern time.
      This file also turns on the **Gmail API** service (you'll see it under *Services* in the left sidebar) and lists the exact permissions the project may use, including **read-only** Gmail and a narrow **Drive** permission (`drive.file`: only files Homebase itself creates, used for meal photos and receipts).
@@ -133,13 +135,20 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 **Food log**
 - Open **Food** and tap **+**. Take or choose a **food photo** and, if you have one, the **receipt**. Add a note if you like ("shared with Drey") and who ate. Tap **Read it**: AI fills in the dish, meal (breakfast, lunch, dinner, snack, dessert, drink), homemade / restaurant / takeout / packaged, the place and date from the receipt, cuisine, ingredients, tags (sweet, spicy, light…), rough calories and protein, and the price. Check it and **Save**. *Fill in by hand* skips the AI.
 - Tap any meal to edit it, rate it (😋 loved it / 🙂 fine / 😕 not again; ratings steer the ideas) or delete it.
-- Or just tell the chat or the Home box: "had pho at Pho 75 for lunch", "Drey had pancakes". It logs it with an estimate (Undo on Home).
+- Or just tell the chat or the Home box: "had pho at Pho 75 for lunch", "Drey had pancakes". It logs it to the food log with an estimate (Undo on Home), also when you say "log" or "record" (meals never go to the Journal). Each night (11:30 pm), meals you only mentioned in passing in that day's chat are added too, marked *picked up from chat*.
 - The log is **shared** by the household: everyone can see and add meals; only the person who logged a meal (or you) can delete it. It lives in the spreadsheet's **Meals** tab; rows typed there work too (a name is enough; lists are comma-separated, people by name).
 - Photos are shrunk on the phone (meal 800 px, receipt 1600 px so it stays readable) and kept in a private **Homebase photos** folder in your Drive (an older install keeps using its existing photo folder).
 - Calories are rough AI estimates, good for spotting patterns, not for exact counting.
 
+**Taste quiz (a head start before the log fills up)**
+- Food → **Take the taste quiz**. Swipe through up to 100 dish photos from many cuisines (Thai, Italian, Mexican, Japanese, Indian, desserts, breakfasts…) and tap 😍 *Love it*, 🙂 *It's OK* or 🙅 *Not for me* (or swipe right / left). Stop anytime with *Done for now*; answers save as you go and the quiz picks up with new dishes next time.
+- Switch the name at the top to rate for someone else (e.g. Drey on your phone). Answers are in the spreadsheet's **Taste** tab.
+- Homebase sums them up for the food ideas (cuisines and kinds of dishes each person likes or avoids), which matters most while the food log is still short.
+- Dishes and photos come from [TheMealDB](https://www.themealdb.com), a free, crowd-sourced dish database; Homebase uses its free key, meant for development and personal projects (credited in the quiz).
+
 **Guess what I want to eat**
 - Food → **Guess what I want to eat**. Quick questions: who's eating, **where** (cook at home, eat out, takeout, surprise me), which meal, how much effort (for home), and anything going on: losing weight, craving sweet or savory, something light, comfort food, high protein, on my period, low energy, something new, quick & easy, budget, kid-friendly. Plus an optional note ("have chicken and rice").
+- **In the mood for:** *My usual* (go-to favourites), *Mix it up* (default: one favourite you haven't had lately, one twist on what you like, one new idea) or *Something different* (nothing from your recent rotation). Liking a dish doesn't mean wanting it every day: anything you've had a lot in the last 10 days is treated as "maybe tired of it", and nothing from the last 2 days is suggested. Each idea is labelled *A favorite*, *A twist* or *Something new*.
 - You get **three ideas**, each with why it fits (your recent meals, places you go and liked, dishes you make, what you rated "not again"), how to make it or what to order, and rough calories. Eating out uses places from your log; new places are described by kind, not invented. **Other ideas** gives three more; **I'll have this** opens a pre-filled log entry.
 - Food notes in Settings → People (allergies, dislikes, goals) are always respected. The chat can do the same: "I don't know what to eat" → it asks one or two questions, then suggests.
 
