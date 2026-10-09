@@ -141,14 +141,15 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - Calories are rough AI estimates, good for spotting patterns, not for exact counting.
 
 **Taste quiz (a head start before the log fills up)**
-- Food → **Take the taste quiz**. Swipe through up to 100 dish photos from many cuisines (Thai, Italian, Mexican, Japanese, Indian, desserts, breakfasts…) and tap 😍 *Love it*, 🙂 *It's OK* or 🙅 *Not for me* (or swipe right / left). Stop anytime with *Done for now*; answers save as you go and the quiz picks up with new dishes next time.
-- Switch the name at the top to rate for someone else (e.g. Drey on your phone). Answers are in the spreadsheet's **Taste** tab.
-- Homebase sums them up for the food ideas (cuisines and kinds of dishes each person likes or avoids), which matters most while the food log is still short.
-- Dishes and photos come from [TheMealDB](https://www.themealdb.com), a free, crowd-sourced dish database; Homebase uses its free key, meant for development and personal projects (credited in the quiz).
+- Food → **Take the taste quiz**. First a quick setup: whose taste, **which cuisines** you eat (American, Chinese, Italian, Japanese, Mexican, Thai, Vietnamese…; none picked = all) and **spice** (not spicy / a little / love spicy). Then rate **30 dish photos**: 😍 *Love it*, 🙂 *It's OK*, 🙅 *Not for me* (or swipe right / left). At the end, *Rate 20 more* if you like. Answers save as you go.
+- For a child (like Drey), kid-friendly dishes come first (pasta, pancakes, chicken, noodles, desserts…), and offal or very spicy dishes are skipped; spice defaults to *not spicy*.
+- The setup is remembered per person and goes to the food ideas too. Answers are in the spreadsheet's **Taste** tab.
+- Dishes and photos come from [TheMealDB](https://www.themealdb.com), a free, crowd-sourced dish database; Homebase uses its free key, meant for development and personal projects (credited in the quiz). The dish list is fetched once (about 10 seconds) and kept for 30 days.
 
 **Guess what I want to eat**
 - Food → **Guess what I want to eat**. Quick questions: who's eating, **where** (cook at home, eat out, takeout, surprise me), which meal, how much effort (for home), and anything going on: losing weight, craving sweet or savory, something light, comfort food, high protein, on my period, low energy, something new, quick & easy, budget, kid-friendly. Plus an optional note ("have chicken and rice").
 - **In the mood for:** *My usual* (go-to favourites), *Mix it up* (default: one favourite you haven't had lately, one twist on what you like, one new idea) or *Something different* (nothing from your recent rotation). Liking a dish doesn't mean wanting it every day: anything you've had a lot in the last 10 days is treated as "maybe tired of it", and nothing from the last 2 days is suggested. Each idea is labelled *A favorite*, *A twist* or *Something new*.
+- **Pictures:** an idea from a place or dish you've logged shows your own photo and *Last time* (what you had, when, the price, ♥ if you loved it) with a 🧾 *Receipt* button. Other ideas show a photo of a similar dish from TheMealDB when there's a close match; otherwise just an icon (no made-up pictures).
 - You get **three ideas**, each with why it fits (your recent meals, places you go and liked, dishes you make, what you rated "not again"), how to make it or what to order, and rough calories. Eating out uses places from your log; new places are described by kind, not invented. **Other ideas** gives three more; **I'll have this** opens a pre-filled log entry.
 - Food notes in Settings → People (allergies, dislikes, goals) are always respected. The chat can do the same: "I don't know what to eat" → it asks one or two questions, then suggests.
 
