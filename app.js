@@ -734,7 +734,7 @@ function paintFood() {
       <div class="muted small">A few quick questions, then three ideas from your taste and what you've been eating.</div>
       <button class="btn primary block" id="fGuess" style="margin-top:12px">Guess what I want to eat</button>
       ${(state.taste?.[myPersonId()] || 0) < 20
-        ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Rate up to 100 dish photos (about 3 minutes) so ideas fit you from day one.</span></span><span aria-hidden="true">›</span></button>`
+        ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Pick your cuisines, then rate 30 dish photos (about a minute) so ideas fit from day one.</span></span><span aria-hidden="true">›</span></button>`
         : `<button type="button" class="btn small ghost" id="fTaste" style="margin-top:8px">Taste quiz · ${state.taste[myPersonId()]} rated</button>`}
     </div>
     ${ps.length > 1 ? `<div class="fchips" id="fFilter"><button data-f="all" class="${f === 'all' ? 'on' : ''}">Everyone</button>${ps.map(p => `<button data-f="${esc(p.id)}" class="${f === p.id ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>` : ''}
@@ -902,11 +902,37 @@ function tasteFlush() {
     .catch(e => { console.warn(e); answers.forEach(a => tasteQueue.push({ person, a })); })));
 }
 const thumbUrl = (u, size) => (u ? u + '/' + size : '');
+// First a quick setup (whose taste, which cuisines, spice), then 30 dishes; "20 more" at the end.
+const AREA_FLAG = { American: '🇺🇸', British: '🇬🇧', Canadian: '🇨🇦', Chinese: '🇨🇳', Croatian: '🇭🇷', Dutch: '🇳🇱', Egyptian: '🇪🇬', Filipino: '🇵🇭', French: '🇫🇷', Greek: '🇬🇷', Indian: '🇮🇳', Irish: '🇮🇪', Italian: '🇮🇹', Jamaican: '🇯🇲', Japanese: '🇯🇵', Kenyan: '🇰🇪', Malaysian: '🇲🇾', Mexican: '🇲🇽', Moroccan: '🇲🇦', Polish: '🇵🇱', Portuguese: '🇵🇹', Russian: '🇷🇺', Spanish: '🇪🇸', Thai: '🇹🇭', Tunisian: '🇹🇳', Turkish: '🇹🇷', Ukrainian: '🇺🇦', Uruguayan: '🇺🇾', Vietnamese: '🇻🇳', Korean: '🇰🇷', Australian: '🇦🇺', Argentinian: '🇦🇷', Norwegian: '🇳🇴', Saudi: '🇸🇦', Slovakian: '🇸🇰', Syrian: '🇸🇾', Venezulan: '🇻🇪', Algerian: '🇩🇿' };
+const SPICE = [['mild', '🙂 Not spicy'], ['mix', '🌶️ A little is fine'], ['spicy', '🔥 Love spicy']];
 async function openTasteQuiz(person) {
   const ps = people();
-  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Getting dishes… (the very first time takes about 10 seconds)</div></div>`);
+  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Getting the dish list… (the very first time takes about 10 seconds)</div></div>`);
+  let st;
+  try { st = await api('taste.setup', { person }, { timeoutMs: 60000 }); }
+  catch (e) { closeModal(); return fail(e); }
+  if ($('#modal').hidden) return;
+  const chosen = new Set(st.chosen || []);
+  let spice = st.spice || 'mix';
+  const who = personName(person);
+  openModal(`<h3>Taste quiz</h3>
+    ${ps.length > 1 ? `<div class="field"><span>Whose taste?</span><div class="fchips" id="qsWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${p.id === person ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><span>Which cuisines ${person === myPersonId() ? 'do you' : 'does ' + esc(who)} eat? <span class="muted">(none picked = all)</span></span>
+      <div class="fchips wrap" id="qsAreas">${(st.areas || []).map(a => `<button type="button" data-a="${esc(a.area)}" class="${chosen.has(a.area) ? 'on' : ''}">${AREA_FLAG[a.area] || ''} ${esc(a.area)}</button>`).join('')}</div></div>
+    <div class="field"><span>Spice</span><div class="seg" id="qsSpice">${SPICE.map(([k, l]) => `<button type="button" data-v="${k}" class="${spice === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    ${st.kid ? `<div class="muted small" style="margin:-4px 0 12px">For a child, kid-friendly dishes come first.</div>` : ''}
+    <button class="btn primary block" id="qsGo">Start (30 dishes)</button>`);
+  $$('#qsWho [data-p]').forEach(b => b.onclick = () => { if (b.dataset.p !== person) openTasteQuiz(b.dataset.p); });
+  $$('#qsAreas [data-a]').forEach(b => b.onclick = () => { b.classList.toggle('on'); if (b.classList.contains('on')) chosen.add(b.dataset.a); else chosen.delete(b.dataset.a); });
+  $$('#qsSpice [data-v]').forEach(b => b.onclick = () => { $$('#qsSpice [data-v]').forEach(x => x.classList.remove('on')); b.classList.add('on'); spice = b.dataset.v; });
+  $('#qsGo').onclick = () => runTasteQuiz(person, [...chosen], spice, 30);
+}
+
+async function runTasteQuiz(person, areas, spice, size) {
+  const ps = people();
+  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Picking dishes…</div></div>`);
   let r;
-  try { r = await api('taste.deck', { person, size: 100 }, { timeoutMs: 60000 }); }
+  try { r = await api('taste.deck', { person, areas, spice, size }, { timeoutMs: 60000 }); }
   catch (e) { closeModal(); return fail(e); }
   if ($('#modal').hidden) return;
   const deck = r.deck || [];
@@ -917,8 +943,10 @@ async function openTasteQuiz(person) {
     const m = deck[i];
     if (!m) {
       tasteFlush().then(() => { if (location.hash === '#food' && $('#modal').hidden) paintFood(); });
-      openModal(`<h3>All done${rated ? '!' : ''}</h3><div class="muted" style="margin-bottom:14px">${rated ? `Thanks! ${rated} dish${rated > 1 ? 'es' : ''} rated. Food ideas now use your taste.` : 'Nothing new to rate right now.'}</div>
+      openModal(`<h3>All done${rated ? '!' : ''}</h3><div class="muted" style="margin-bottom:14px">${rated ? `Thanks! ${rated} dish${rated > 1 ? 'es' : ''} rated. Food ideas now use this taste.` : 'Nothing new to rate with these cuisines. Pick more cuisines to see other dishes.'}</div>
+        ${deck.length ? '<button class="btn block" id="qzMore" style="margin-bottom:8px">Rate 20 more</button>' : ''}
         <button class="btn primary block" id="qzOk">Back to Food</button>`);
+      $('#qzMore')?.addEventListener('click', () => tasteFlush().then(() => runTasteQuiz(person, areas, spice, 20)));
       $('#qzOk').onclick = () => { closeModal(); if (location.hash === '#food') paintFood(); };
       return;
     }
@@ -1014,13 +1042,26 @@ async function runGuess(a, seen) {
     ${r.intro ? `<div class="muted small" style="margin:-4px 0 10px">${esc(r.intro)}</div>` : ''}
     ${ideas.map((x, i) => `<div class="idea">
       ${x.kind ? `<span class="idea-kind k-${esc(x.kind)}">${KIND_LABEL[x.kind] || ''}</span>` : ''}
-      <div class="idea-head"><span class="idea-i">${whereIcon(x.where)}</span><div class="grow"><b>${esc(x.title)}</b><div class="muted small">${esc(whereText(x))}${x.est_calories ? ` · ~${x.est_calories} kcal` : ''}</div></div></div>
+      <div class="idea-head">${x.last?.photo_id ? `<span class="ph idea-ph" data-photo="${esc(x.last.photo_id)}"><span class="ph-i">${whereIcon(x.where)}</span></span>`
+        : x.photo_url ? `<img class="idea-ph" alt="" loading="lazy" src="${esc(x.photo_url + '/small')}" onerror="this.onerror=null;this.src='${esc(x.photo_url)}'">`
+        : `<span class="idea-i">${whereIcon(x.where)}</span>`}<div class="grow"><b>${esc(x.title)}</b><div class="muted small">${esc(whereText(x))}${x.est_calories ? ` · ~${x.est_calories} kcal` : ''}</div></div></div>
       <div class="idea-why">${esc(x.why)}</div>
       ${x.how ? `<div class="small idea-how">${esc(x.how)}</div>` : ''}
       ${x.ingredients?.length ? `<div class="small muted">Need: ${esc(x.ingredients.join(', '))}</div>` : ''}
+      ${x.last ? `<div class="idea-last small">Last time: ${esc(x.last.name)}${x.last.place ? ' at ' + esc(x.last.place) : ''} · ${esc(rel(x.last.date))}${x.last.price ? ' · $' + esc(Number(x.last.price).toFixed(2)) : ''}${x.last.rating === 1 ? ' · ♥' : ''}
+        ${x.last.receipt_id ? `<button type="button" class="linkish rc-btn" data-rc="${esc(x.last.receipt_id)}">🧾 Receipt</button>` : ''}</div>` : ''}
+      ${x.photo_url && x.photo_of ? `<div class="tiny" style="text-align:left">Photo: ${esc(x.photo_of)} · TheMealDB</div>` : ''}
       <button type="button" class="btn small" data-pick="${i}">I'll have this</button>
     </div>`).join('') || '<div class="muted">No ideas came back. Try again.</div>'}
     <div class="btn-row" style="margin-top:6px"><button class="btn" id="gMore">Other ideas</button><button class="btn ghost" id="gBack">Change answers</button></div>`);
+  ensurePhotos();
+  $$('[data-rc]').forEach(b => b.onclick = () => {
+    const box = b.closest('.idea');
+    const open = box.querySelector('.rc-view');
+    if (open) { open.remove(); return; }
+    box.insertAdjacentHTML('beforeend', `<span class="ph rc-view" data-photo="${esc(b.dataset.rc)}"><span class="ph-i">🧾</span></span>`);
+    ensurePhotos();
+  });
   $$('[data-pick]').forEach(b => b.onclick = () => {
     const x = ideas[+b.dataset.pick];
     openMealEditor(null, { name: x.title, meal: r.meal || a.meal, source: x.where === 'home' ? 'homemade' : x.where === 'takeout' ? 'takeout' : 'restaurant',

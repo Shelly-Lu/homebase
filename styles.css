@@ -431,3 +431,8 @@ details.later[open] > summary::after { content: '▴'; }
 .idea-kind { display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; border-radius: 999px; padding: 2px 9px; margin-bottom: 8px; background: var(--surface-2); color: var(--ink-2); }
 .idea-kind.k-favorite { background: var(--accent-soft); color: var(--accent); }
 .idea-kind.k-new { background: var(--soon-soft); color: var(--soon); }
+.idea-ph { width: 56px; height: 56px; aspect-ratio: auto; flex: none; border-radius: 12px; object-fit: cover; background: var(--surface-2); }
+.idea-ph .ph-i { font-family: inherit; font-size: 22px; }
+.idea-last { color: var(--ink-2); margin: 4px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.rc-btn { padding: 2px 0; font-size: 13px; color: var(--accent); }
+.rc-view { display: block; width: 100%; aspect-ratio: 3 / 4; max-height: 60vh; background-size: contain; border-radius: 12px; margin-top: 8px; }
