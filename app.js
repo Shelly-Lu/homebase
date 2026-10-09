@@ -85,7 +85,7 @@ const FRESH_MS = 60 * 1000;
 const cached = loadSaved(CACHE_KEY) || {};
 const state = {
   today: cached.today || loadSaved('homebase.today'),
-  tasks: cached.tasks || null, meals: cached.meals || null, journal: cached.journal || null,
+  tasks: cached.tasks || null, meals: cached.meals || null, taste: cached.taste || null, journal: cached.journal || null,
   chat: cached.chat || null, settings: null, fetchedAt: {},
   me: cached.me || null          // {id, name, role: 'owner'|'member', person_id}
 };
@@ -123,7 +123,7 @@ let saveTimer = null;
 function saveCache() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, meals: (state.meals || []).slice(0, 150), journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, meals: (state.meals || []).slice(0, 150), taste: state.taste, journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
     catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
   }, 250);
 }
@@ -164,6 +164,7 @@ function refreshAll() {
     if (b.family !== undefined && b.family !== null) state.familyCount = b.family;
     if (b.tasks) state.tasks = b.tasks;
     if (b.meals) state.meals = b.meals;
+    if (b.taste) state.taste = b.taste;
     const now = Date.now();
     ['today', 'tasks', 'meals'].forEach(k => { state.fetchedAt[k] = now; });
     saveCache();
@@ -672,6 +673,8 @@ const NEEDS = [['weight loss', 'Losing weight'], ['craving sweet', 'Craving swee
   ['comfort food', 'Comfort food'], ['high protein', 'High protein'], ['on my period', 'On my period'], ['low energy', 'Low energy'],
   ['something new', 'Something new'], ['quick and easy', 'Quick & easy'], ['budget', 'Budget'], ['kid-friendly', 'Kid-friendly']];
 const WHERE = [['home', '🏠', 'Cook at home'], ['out', '🍽️', 'Eat out'], ['takeout', '🥡', 'Takeout'], ['any', '🎲', 'Surprise me']];
+const MOODS = [['usual', 'My usual'], ['mix', 'Mix it up'], ['new', 'Something different']];
+const KIND_LABEL = { favorite: 'A favorite', twist: 'A twist', new: 'Something new' };
 const EFFORT = [['15 minutes', '⚡ 15 min'], ['normal', 'Normal'], ['no limit', 'No rush']];
 const mealIcon = m => (MEALS.find(x => x[0] === m) || MEALS[2])[2];
 const mealLabel = m => (MEALS.find(x => x[0] === m) || [m, m])[1];
@@ -728,8 +731,11 @@ function paintFood() {
   view.innerHTML = `
     <div class="card food-hero">
       <div class="fh-q">Not sure what to eat?</div>
-      <div class="muted small">A few quick questions, then three ideas from what you've been eating.</div>
+      <div class="muted small">A few quick questions, then three ideas from your taste and what you've been eating.</div>
       <button class="btn primary block" id="fGuess" style="margin-top:12px">Guess what I want to eat</button>
+      ${(state.taste?.[myPersonId()] || 0) < 20
+        ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Rate up to 100 dish photos (about 3 minutes) so ideas fit you from day one.</span></span><span aria-hidden="true">›</span></button>`
+        : `<button type="button" class="btn small ghost" id="fTaste" style="margin-top:8px">Taste quiz · ${state.taste[myPersonId()]} rated</button>`}
     </div>
     ${ps.length > 1 ? `<div class="fchips" id="fFilter"><button data-f="all" class="${f === 'all' ? 'on' : ''}">Everyone</button>${ps.map(p => `<button data-f="${esc(p.id)}" class="${f === p.id ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>` : ''}
     ${weekSummary(list) ? `<div class="muted small food-week">${esc(weekSummary(list))}</div>` : ''}
@@ -738,6 +744,7 @@ function paintFood() {
     ${list.length > shown.length ? `<button class="btn ghost block" id="fMore">Show earlier meals</button>` : ''}
     <div class="spacer"></div>`;
   $('#fGuess').onclick = () => openGuess();
+  $('#fTaste').onclick = () => openTasteQuiz(myPersonId());
   $$('#fFilter [data-f]').forEach(b => b.onclick = () => { state.ffilter = b.dataset.f; paintFood(); });
   $('#fMore')?.addEventListener('click', () => { state.fshow += 60; paintFood(); });
   $$('[data-meal]', view).forEach(b => b.onclick = () => { const m = (state.meals || []).find(x => x.id === b.dataset.meal); if (m) openMealEditor(m); });
@@ -882,16 +889,96 @@ function mealForm(meal, pre, draft) {
   });
 }
 
+// --- Taste quiz: rate dish photos (from TheMealDB) so ideas fit from day one ---
+const tasteQueue = [];
+let tasteTimer = null;
+function tasteFlush() {
+  clearTimeout(tasteTimer); tasteTimer = null;
+  if (!tasteQueue.length) return Promise.resolve();
+  const byPerson = {};
+  tasteQueue.splice(0).forEach(x => { (byPerson[x.person] = byPerson[x.person] || []).push(x.a); });
+  return Promise.all(Object.entries(byPerson).map(([person, answers]) => api('taste.save', { person, answers })
+    .then(r => { if (r?.counts) { state.taste = r.counts; saveCache(); } })
+    .catch(e => { console.warn(e); answers.forEach(a => tasteQueue.push({ person, a })); })));
+}
+const thumbUrl = (u, size) => (u ? u + '/' + size : '');
+async function openTasteQuiz(person) {
+  const ps = people();
+  openModal(`<h3>Taste quiz</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Getting dishes…</div></div>`);
+  let r;
+  try { r = await api('taste.deck', { person, size: 100 }, { timeoutMs: 60000 }); }
+  catch (e) { closeModal(); return fail(e); }
+  if ($('#modal').hidden) return;
+  const deck = r.deck || [];
+  let i = 0, rated = 0;
+  const pre = new Set();
+  const preload = () => deck.slice(i + 1, i + 4).forEach(m => { if (!pre.has(m.id)) { pre.add(m.id); const im = new Image(); im.src = thumbUrl(m.thumb, 'medium'); } });
+  const paint = () => {
+    const m = deck[i];
+    if (!m) {
+      tasteFlush().then(() => { if (location.hash === '#food' && $('#modal').hidden) paintFood(); });
+      openModal(`<h3>All done${rated ? '!' : ''}</h3><div class="muted" style="margin-bottom:14px">${rated ? `Thanks! ${rated} dish${rated > 1 ? 'es' : ''} rated. Food ideas now use your taste.` : 'Nothing new to rate right now.'}</div>
+        <button class="btn primary block" id="qzOk">Back to Food</button>`);
+      $('#qzOk').onclick = () => { closeModal(); if (location.hash === '#food') paintFood(); };
+      return;
+    }
+    openModal(`<div class="quiz-top">${ps.length > 1 ? `<div class="fchips" id="qzWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${p.id === person ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>` : '<h3 style="margin:0">Taste quiz</h3>'}
+        <span class="muted small">${i + 1} / ${deck.length}</span></div>
+      <div class="progress quiz-prog"><i style="width:${Math.round(100 * i / deck.length)}%"></i></div>
+      <div class="quiz-card" id="qzCard">
+        <img class="quiz-img" alt="" src="${esc(thumbUrl(m.thumb, 'medium'))}">
+        <div class="quiz-name">${esc(m.name)}</div>
+        <div class="muted small">${esc([m.area, m.category].filter(Boolean).join(' · '))}</div>
+      </div>
+      <div class="quiz-btns">
+        <button type="button" class="btn" data-a="-1"><span>🙅</span>Not for me</button>
+        <button type="button" class="btn" data-a="0"><span>🙂</span>It's OK</button>
+        <button type="button" class="btn primary" data-a="1"><span>😍</span>Love it</button>
+      </div>
+      <div class="quiz-foot"><button type="button" class="linkish" id="qzSkip">Skip</button><button type="button" class="linkish" id="qzDone">Done for now</button></div>
+      <div class="muted tiny">Dishes and photos: <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a></div>`);
+    const img = $('.quiz-img');
+    img.onerror = () => { if (!img.dataset.full) { img.dataset.full = '1'; img.src = m.thumb; } };
+    preload();
+    const answer = v => {
+      tasteQueue.push({ person, a: { dish_id: m.id, name: m.name, area: m.area, category: m.category, answer: v } });
+      rated++;
+      clearTimeout(tasteTimer); tasteTimer = setTimeout(tasteFlush, tasteQueue.length >= 10 ? 0 : 1500);
+      i++; paint();
+    };
+    $$('.quiz-btns [data-a]').forEach(b => b.onclick = () => answer(Number(b.dataset.a)));
+    $('#qzSkip').onclick = () => { i++; paint(); };
+    $('#qzDone').onclick = () => {
+      tasteFlush().then(() => { if (location.hash === '#food' && $('#modal').hidden) paintFood(); });
+      closeModal(); toast(rated ? `Saved ${rated} answer${rated > 1 ? 's' : ''}.` : 'See you next time.');
+    };
+    $$('#qzWho [data-p]').forEach(b => b.onclick = () => { if (b.dataset.p !== person) { tasteFlush(); openTasteQuiz(b.dataset.p); } });
+    // swipe the card: right = love it, left = not for me
+    const card = $('#qzCard');
+    let x0 = null;
+    card.addEventListener('pointerdown', e => { x0 = e.clientX; card.setPointerCapture?.(e.pointerId); });
+    card.addEventListener('pointermove', e => { if (x0 !== null) card.style.transform = `translateX(${e.clientX - x0}px) rotate(${(e.clientX - x0) / 30}deg)`; });
+    const end = e => {
+      if (x0 === null) return;
+      const dx = e.clientX - x0; x0 = null; card.style.transform = '';
+      if (dx > 90) answer(1); else if (dx < -90) answer(-1);
+    };
+    card.addEventListener('pointerup', end); card.addEventListener('pointercancel', () => { x0 = null; card.style.transform = ''; });
+  };
+  paint();
+}
+
 // --- "Guess what I want to eat": a few questions, then three ideas ---
 function openGuess(prev) {
   const ps = people();
   let saved = {};
   try { saved = JSON.parse(lsGet('homebase.guess', '{}')) || {}; } catch { saved = {}; }
-  const a = prev || { people: [myPersonId()], where: saved.where || '', meal: mealByTime(), effort: saved.effort || 'normal', needs: [], note: '' };
+  const a = prev || { people: [myPersonId()], where: saved.where || '', meal: mealByTime(), effort: saved.effort || 'normal', mood: 'mix', needs: [], note: '' };
   openModal(`<h3>What are you in the mood for?</h3>
     ${ps.length > 1 ? `<div class="field"><span>Who's eating?</span><div class="fchips" id="gWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${a.people.includes(p.id) ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
     <div class="field"><span>Where?</span><div class="where-grid" id="gWhere">${WHERE.map(([k, i, l]) => `<button type="button" data-v="${k}" class="${a.where === k ? 'on' : ''}"><span>${i}</span>${l}</button>`).join('')}</div></div>
     <div class="field"><span>Which meal?</span><div class="fchips wrap" id="gMeal">${MEALS.filter(x => x[0] !== 'drink').map(([k, l, i]) => `<button type="button" data-v="${k}" class="${a.meal === k ? 'on' : ''}">${i} ${l}</button>`).join('')}</div></div>
+    <div class="field"><span>In the mood for</span><div class="seg" id="gMood">${MOODS.map(([k, l]) => `<button type="button" data-v="${k}" class="${a.mood === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="field" id="gEffortF"><span>How much effort?</span><div class="seg" id="gEffort">${EFFORT.map(([k, l]) => `<button type="button" data-v="${k}" class="${a.effort === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="field"><span>Anything going on? <span class="muted">(pick any)</span></span><div class="fchips wrap" id="gNeeds">${NEEDS.map(([k, l]) => `<button type="button" data-v="${esc(k)}" class="${a.needs.includes(k) ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <label class="field"><span>Anything else? <span class="muted">(optional)</span></span><input type="text" id="gNote" value="${esc(a.note)}" maxlength="200" placeholder="e.g. have chicken and rice; nothing too spicy"></label>
@@ -900,7 +987,7 @@ function openGuess(prev) {
   const one = (id, key) => $$(`#${id} [data-v]`).forEach(b => b.onclick = () => {
     $$(`#${id} [data-v]`).forEach(x => x.classList.remove('on')); b.classList.add('on'); a[key] = b.dataset.v; effortShow();
   });
-  one('gWhere', 'where'); one('gMeal', 'meal'); one('gEffort', 'effort');
+  one('gWhere', 'where'); one('gMeal', 'meal'); one('gEffort', 'effort'); one('gMood', 'mood');
   effortShow();
   $$('#gNeeds [data-v]').forEach(b => b.onclick = () => { b.classList.toggle('on'); a.needs = $$('#gNeeds [data-v].on').map(x => x.dataset.v); });
   $$('#gWho [data-p]').forEach(b => b.onclick = () => { b.classList.toggle('on'); a.people = $$('#gWho [data-p].on').map(x => x.dataset.p); });
@@ -917,7 +1004,7 @@ async function runGuess(a, seen) {
   openModal(`<h3>Thinking…</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Looking at what you've been eating${a.needs.length ? ' and ' + esc(a.needs.join(', ')) : ''}.</div></div>`);
   let r;
   try {
-    r = await api('meals.recommend', { people: a.people, where: a.where, meal: a.meal, effort: a.where === 'home' || a.where === 'any' ? a.effort : '', needs: a.needs, note: a.note, exclude: seen }, { timeoutMs: 90000 });
+    r = await api('meals.recommend', { people: a.people, where: a.where, meal: a.meal, effort: a.where === 'home' || a.where === 'any' ? a.effort : '', mood: a.mood || 'mix', needs: a.needs, note: a.note, exclude: seen }, { timeoutMs: 90000 });
   } catch (e) { closeModal(); return fail(e); }
   if ($('#modal').hidden) return;   // closed while waiting
   const ideas = r.ideas || [];
@@ -926,6 +1013,7 @@ async function runGuess(a, seen) {
   openModal(`<h3>How about…</h3>
     ${r.intro ? `<div class="muted small" style="margin:-4px 0 10px">${esc(r.intro)}</div>` : ''}
     ${ideas.map((x, i) => `<div class="idea">
+      ${x.kind ? `<span class="idea-kind k-${esc(x.kind)}">${KIND_LABEL[x.kind] || ''}</span>` : ''}
       <div class="idea-head"><span class="idea-i">${whereIcon(x.where)}</span><div class="grow"><b>${esc(x.title)}</b><div class="muted small">${esc(whereText(x))}${x.est_calories ? ` · ~${x.est_calories} kcal` : ''}</div></div></div>
       <div class="idea-why">${esc(x.why)}</div>
       ${x.how ? `<div class="small idea-how">${esc(x.how)}</div>` : ''}
@@ -1589,8 +1677,8 @@ function paintServerSettings() {
       <label class="field check-field row-field"><input type="checkbox" id="sFullMail" ${s.email_full_search !== 'off' ? 'checked' : ''}><span>Let my chat search all my email <span class="muted small">(read-only; not spam, trash or promotions; never for family members)</span></span></label>
       <details class="why" style="margin-bottom:12px"><summary>AI models, usage & cost</summary>
         <label class="field" style="margin-top:8px"><span>AI provider</span><select id="sProvider">
-          <option value="auto" ${!s.ai_provider || s.ai_provider === 'auto' ? 'selected' : ''}>Auto: Claude if CLAUDE_API_KEY is set, otherwise Gemini</option>
-          <option value="claude" ${s.ai_provider === 'claude' ? 'selected' : ''}>Claude (paid per use, private)</option>
+          <option value="auto" ${!s.ai_provider || s.ai_provider === 'auto' ? 'selected' : ''}>Auto: Claude if CLAUDE_API_KEY is set (Gemini as backup if its key is set), otherwise Gemini</option>
+          <option value="claude" ${s.ai_provider === 'claude' ? 'selected' : ''}>Claude only (no Gemini backup)</option>
           <option value="gemini" ${s.ai_provider === 'gemini' ? 'selected' : ''}>Gemini (free tier)</option></select></label>
         <div class="two">
           <label class="field"><span>Claude everyday model</span><input type="text" id="sClaudeMain" value="${esc(s.claude_model_main || 'claude-haiku-5-5')}"></label>
