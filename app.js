@@ -582,10 +582,13 @@ function paintTasks() {
   saveCache();
   const all = state.tasks || [];
   // Shown: overdue, today and tomorrow. Folded: the rest of this week and next. Further out stays in the spreadsheet.
-  const by = (lo, hi) => all.filter(t => t.days_until !== null && t.days_until >= lo && t.days_until <= hi);
-  const attention = all.filter(t => t.days_until !== null && t.days_until <= 0);
+  // Recurring chores only show up when they're due; otherwise they wait, folded, at the end.
+  const recurring = all.filter(t => t.interval_days && (t.days_until === null || t.days_until > 0));
+  const oneTime = all.filter(t => !recurring.includes(t));
+  const by = (lo, hi) => oneTime.filter(t => t.days_until !== null && t.days_until >= lo && t.days_until <= hi);
+  const attention = oneTime.filter(t => t.days_until !== null && t.days_until <= 0);
   const tomorrow = by(1, 1), week = by(2, 7), twoWeeks = by(8, 14);
-  const beyond = all.filter(t => t.days_until === null || t.days_until > 14).length;
+  const beyond = oneTime.filter(t => t.days_until === null || t.days_until > 14).length;
   state.taskFolds = state.taskFolds || {};
   const section = (name, list) => `<div class="section-title">${name}<span>${list.length}</span></div><div class="card">${list.map(taskRow).join('')}</div>`;
   const fold = (key, name, list) => list.length ? `<details class="later" data-fold="${key}" ${state.taskFolds[key] ? 'open' : ''}>
@@ -597,7 +600,8 @@ function paintTasks() {
       (tomorrow.length ? section('Tomorrow', tomorrow) : '') +
       (!attention.length && !tomorrow.length ? '<div class="empty small">Nothing due today or tomorrow. 🎉</div>' : '') +
       fold('week', 'Next 7 days', week) + fold('two', 'Next 14 days', twoWeeks) +
-      (beyond ? `<div class="muted small" style="margin:12px 4px">+${beyond} more after that, in the spreadsheet's Tasks tab. Ask Homebase anytime, e.g. “what's due next month?”</div>` : ''));
+      (beyond ? `<div class="muted small" style="margin:12px 4px">+${beyond} more after that, in the spreadsheet's Tasks tab. Ask Homebase anytime, e.g. “what's due next month?”</div>` : '') +
+      fold('rec', 'Recurring', recurring));
   $$('details[data-fold]').forEach(d => d.addEventListener('toggle', () => { state.taskFolds[d.dataset.fold] = d.open; }));
   bindTaskTabs();
   bindTaskRows(view, () => renderTasks());
