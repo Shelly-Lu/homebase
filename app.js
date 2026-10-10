@@ -260,7 +260,8 @@ function carryHtml(t) {
   const evening = new Date().getHours() >= 18 && t.tomorrow_carry;
   const c = evening ? t.tomorrow_carry : t.carry;
   if (!c) return '';
-  return `<div class="carry"><div class="muted small">${evening ? 'Tomorrow, bring' : 'Bring'}</div>
+  const note = evening ? t.tomorrow_note : t.day_note;
+  return `<div class="carry">${note && note !== c.line ? `<div class="carry-note">${esc(note)}</div>` : ''}<div class="muted small">${evening ? 'Tomorrow, bring' : 'Bring'}</div>
     ${c.items?.length ? `<div class="carry-items">${c.items.map(i => `<span class="carry-i"><span aria-hidden="true">${CARRY_ICON[i.key] || '•'}</span><b>${esc(i.text)}</b>${i.why ? `<span class="muted">${esc(i.why)}</span>` : ''}</span>`).join('')}</div>`
       : `<div class="small">${evening ? 'Nothing extra tomorrow.' : 'Nothing extra today.'}</div>`}</div>`;
 }
@@ -1378,7 +1379,7 @@ function quickBox() {
     try { quickShare = { image: await shareImage(f) }; paintQuickChip(); } catch (err) { fail(err); }
     e.target.value = '';
   };
-  $('#qMic', quickEl)?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { quickMic = true; grow(); }));
+  $('#qMic', quickEl)?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { grow(); quickSend(); }));
   return quickEl;
 }
 function paintQuickChip() {
@@ -1407,7 +1408,6 @@ async function quickSend() {
     state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined });
     saveCache();
     invalidate();
-    if (viaMic) speak(r.reply);
     if ((r.actions || []).length && !r.asked && !r.charts?.length) showLogged(r);
     else { res.innerHTML = ''; location.hash = '#chat'; }
     refreshAll();
@@ -1560,29 +1560,65 @@ function voiceLang() {
   return v || (navigator.language || 'en-US');
 }
 let activeRec = null;
-function dictate(textarea, btn, onDone) {
+const DICTATE_SEND_MS = 2500;   // 🎤 in the chat box / Home box: after you stop talking this long, it sends by itself
+/**
+ * Speech to text for the chat box and the Home box: the words appear as you speak; 2.5 seconds after you stop, onSend
+ * runs (the message goes, no Send button). Tap the mic again to send at once. Typing takes over (no auto-send).
+ */
+function dictate(textarea, btn, onSend) {
   if (!SR) return toast("Voice input isn't available here. Open Homebase in Chrome, or use the mic on your keyboard.", true);
-  if (activeRec) { activeRec.stop(); return; }
+  if (activeRec) { activeRec.finish?.(); return; }
   stopSpeaking();
-  const rec = new SR();
-  rec.lang = voiceLang(); rec.interimResults = true; rec.continuous = false;
   const base = textarea.value.trim() ? textarea.value.trim() + ' ' : '';
-  let heard = false;
-  rec.onresult = e => {
-    let txt = '';
-    for (const r of e.results) txt += r[0].transcript;
-    heard = !!txt.trim();
-    textarea.value = base + txt;
-    textarea.dispatchEvent(new Event('input'));
+  let committed = '', live = '', lastHeard = 0, finished = false, rec = null, errors = 0;
+  const started = Date.now();
+  const text = () => (committed + ' ' + live).replace(/\s+/g, ' ').trim();
+  const show = () => { textarea.value = base + text(); textarea.dispatchEvent(new Event('input')); };
+  const stopAll = send => {
+    if (finished) return;
+    finished = true; clearInterval(tick);
+    textarea.removeEventListener('keydown', onType);
+    const r = rec; rec = null; activeRec = null;
+    try { r?.abort(); } catch { /* fine */ }
+    btn.classList.remove('rec');
+    if (send && text()) onSend?.();
   };
-  rec.onerror = e => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Allow the microphone for Homebase (Chrome → site settings → Microphone).', true);
-    else if (e.error !== 'no-speech' && e.error !== 'aborted') toast('Voice input stopped: ' + e.error, true);
+  const onType = () => stopAll(false);          // you started typing: it's yours to send
+  textarea.addEventListener('keydown', onType);
+  const begin = () => {
+    if (finished) return;
+    const r = new SR();
+    rec = r;
+    r.lang = voiceLang(); r.interimResults = true; r.continuous = false;
+    r.onresult = e => {
+      if (r !== rec) return;
+      let t = '';
+      for (const x of e.results) t += x[0].transcript;
+      live = t.trim();
+      if (live) { lastHeard = Date.now(); show(); }
+    };
+    r.onerror = e => {
+      if (r !== rec) return;
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('Allow the microphone for Homebase (Chrome → site settings → Microphone).', true); stopAll(false); }
+      else if (e.error !== 'no-speech' && e.error !== 'aborted') errors++;
+    };
+    r.onend = () => {
+      if (r !== rec) return;
+      committed = text(); live = '';
+      if (finished) return;
+      if (errors > 4) { toast('Voice input stopped. Check the connection.', true); return stopAll(false); }
+      setTimeout(begin, 80);                    // Chrome stops after each short pause: keep listening
+    };
+    try { r.start(); } catch { errors++; setTimeout(begin, 400); }
   };
-  rec.onend = () => { activeRec = null; btn.classList.remove('rec'); if (heard) onDone?.(); };
-  activeRec = rec;
+  const tick = setInterval(() => {
+    const now = Date.now();
+    if (lastHeard && text() && now - lastHeard >= DICTATE_SEND_MS) stopAll(true);
+    else if (!lastHeard && now - started >= 9000) stopAll(false);   // nothing said
+  }, 150);
+  activeRec = { finish: () => stopAll(true), abort: () => stopAll(false) };
   btn.classList.add('rec');
-  try { rec.start(); } catch (e) { activeRec = null; btn.classList.remove('rec'); fail(e); }
+  begin();
 }
 function plainForSpeech(t) {
   return String(t || '').replace(/\*\*|__|`|#+ /g, '').replace(/^\s*[-*•] /gm, '').replace(/https?:\/\/\S+/g, 'link')
@@ -1670,6 +1706,12 @@ async function say(text, opts = {}) {
   stopSpeaking();
   const my = speakSeq;
   const voice = opts.phone ? null : chirpVoice();
+  // short phrases ("Bye!", "Okay.") never wait for the network: the phone voice says it now, and the natural voice
+  // is fetched in the background for next time
+  if (voice && opts.instant && opts.keep && !lsGet(keptKey(plain, voice), '')) {
+    naturalAudio(plain, voice, true).catch(() => {});
+    return phoneSpeak(plain);
+  }
   if (voice && isConfigured()) {
     try {
       const src = await naturalAudio(plain, voice, opts.keep);
@@ -1683,9 +1725,9 @@ async function say(text, opts = {}) {
 function speak(text, opts) { say(text, opts); }
 
 // ================= TALK MODE =================
-// Hands-free conversation: the assistant greets you, listens, sends after a 2.5-second pause, reads the answer
+// Hands-free conversation: the assistant greets you, listens, sends as soon as you finish speaking, reads the answer
 // and listens again. "Thanks" or "bye" ends it; so do two silences in a row. "Never mind" drops what you said.
-const TALK_PAUSE_MS = 2500;          // quiet time after you speak before it sends
+const TALK_PAUSE_MS = 2500;          // safety only: talk mode sends as soon as Chrome hears you stop
 const TALK_WAIT_MS = 9000;           // how long it waits for you to start talking
 const talk = { on: false, gen: 0, state: 'idle', rec: null, silences: 0, wake: null, finishNow: null, el: null, blocked: false, pushed: false };
 // lower case, no punctuation, without the assistant's name ("thanks Bella" = "thanks")
@@ -1697,7 +1739,7 @@ function normSpeech(t) {
 const END_RE = /^(?:(?:ok|okay|alright|great|perfect|cool)\s+)?(?:thanks|thank you|thank you so much|thanks a lot|thanks so much|bye|bye bye|goodbye|good bye|thanks bye|thank you bye|thanks goodbye|thank you goodbye|谢谢|謝謝|多谢|多謝|拜拜|再见|再見|谢谢 再见|謝謝 再見)$/;
 const CANCEL_RE = /^(?:never ?mind|cancel|cancel that|forget it|算了|取消|唔使)$/;
 
-function talkGreeting() { return langFamily(voiceLang()) === 'zh' ? `你好！我在。有什么可以帮你？` : `Hello! I'm here. How can I help?`; }
+function talkGreeting() { return langFamily(voiceLang()) === 'zh' ? `你好，我是${assistantName()}。` : `Hello, I'm ${assistantName()}.`; }
 
 function talkHtml() {
   const nm = esc(assistantName());
@@ -1777,6 +1819,17 @@ async function talkGreet(auto) {
     return;
   }
   talkListen();
+  prefetchPhrases();
+}
+// Fetch Bella's short phrases once in the background, so they play instantly later.
+const TALK_PHRASES = ['Bye!', 'Okay.', `I'll be here if you need me.`];
+async function prefetchPhrases() {
+  const v = chirpVoice();
+  if (!v || !isConfigured()) return;
+  for (const p of TALK_PHRASES) {
+    if (lsGet(keptKey(p, v), '')) continue;
+    try { await naturalAudio(p, v, true); } catch { return; }
+  }
 }
 function talkTap() {
   if (!talk.on) return;
@@ -1789,8 +1842,7 @@ function talkTap() {
   }
 }
 
-// Listens until you've been quiet for TALK_PAUSE_MS (or for TALK_WAIT_MS without starting). Chrome on Android
-// stops listening after each short pause, so it quietly starts again until the pause is long enough.
+// Listens until you finish speaking (Chrome's end of speech), or TALK_WAIT_MS without starting.
 function listenFor(g) {
   return new Promise((resolve, reject) => {
     let committed = '', live = '', lastHeard = 0, errors = 0, finished = false, rec = null;
@@ -1822,6 +1874,7 @@ function listenFor(g) {
         if (r !== rec) return;
         committed = text(); live = '';
         if (finished) return;
+        if (committed) return finish();                  // you finished speaking: send now (talk mode doesn't wait)
         if (errors > 4) { stopAll(); return reject(new Error("I can't hear right now. Check the connection, then tap.")); }
         setTimeout(begin, 80);
       };
@@ -1854,7 +1907,7 @@ async function talkListen() {
   if (!talk.on || g !== talk.gen) return;
   if (!heard) {
     if (++talk.silences >= 2) {
-      const r = await talkSay(`I'll be here if you need me.`, { keep: true });
+      const r = await talkSay(`I'll be here if you need me.`, { keep: true, instant: true });
       if (r !== 'stopped') closeTalk();
       return;
     }
@@ -1865,13 +1918,13 @@ async function talkListen() {
   const n = normSpeech(heard);
   if (END_RE.test(n)) {
     talkLine('talkReply', 'Bye!');
-    const r = await talkSay('Bye!', { keep: true });
+    const r = await talkSay('Bye!', { keep: true, instant: true });
     if (r !== 'stopped') closeTalk();
     return;
   }
   if (CANCEL_RE.test(n)) {
     talkLine('talkReply', 'Okay.');
-    const r = await talkSay('Okay.', { keep: true });
+    const r = await talkSay('Okay.', { keep: true, instant: true });
     if (r !== 'stopped' && talk.on && g === talk.gen) talkListen();
     return;
   }
@@ -2044,7 +2097,7 @@ async function renderChat() {
     grow();
   };
   $('#chatAttach').onclick = () => $('#chatFile').click();
-  $('#chatMic')?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { chatMic = true; grow(); }));
+  $('#chatMic')?.addEventListener('click', e => dictate(ta, e.currentTarget, () => { grow(); composer.requestSubmit(); }));
   $('#chatFile').onchange = async e => {
     const f = e.target.files?.[0]; if (!f) return;
     try { state.pendingShare = { ...(state.pendingShare || {}), image: await shareImage(f) }; showShare(); } catch (err) { fail(err); }
@@ -2114,7 +2167,6 @@ async function sendChat(text, viaMic = false) {
     noteTiming(r.timing);
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined }); saveCache();
-    if (viaMic) speak(r.reply);
     invalidate(); // the assistant may have changed tasks, meals or the calendar
   } catch (e) {
     state.chat.pop();
@@ -2393,7 +2445,7 @@ function paintServerSettings() {
             <input type="text" id="sWatchExtra" value="${esc(watch.extra)}" placeholder="e.g. newer_than:30d" style="margin-top:6px"></details>
         </details>
         <span class="muted small" style="display:block;margin-top:5px">The hourly check reads only these senders and turns dates and to-dos into suggestions on Today (family members see the suggestions, not the emails).</span></div>
-      <label class="field check-field row-field"><input type="checkbox" id="sFullMail" ${s.email_full_search !== 'off' ? 'checked' : ''}><span>Let my chat search all my email <span class="muted small">(read-only; not spam, trash or promotions; never for family members)</span></span></label>
+      <label class="field check-field row-field"><input type="checkbox" id="sFullMail" ${s.email_full_search === 'on' ? 'checked' : ''}><span>Let my chat search all my email <span class="muted small">(read-only; not spam, trash or promotions; never for family members)</span></span></label>
       <details class="why" style="margin-bottom:12px"><summary>AI models, usage & cost</summary>
         <label class="field" style="margin-top:8px"><span>AI provider</span><select id="sProvider">
           <option value="auto" ${!s.ai_provider || s.ai_provider === 'auto' ? 'selected' : ''}>Auto: Claude if CLAUDE_API_KEY is set (Gemini as backup if its key is set), otherwise Gemini</option>
