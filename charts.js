@@ -128,7 +128,20 @@ function track(svg, W, H, move, leave) {
   svg.addEventListener('pointermove', e => move(...at(e)));
   svg.addEventListener('pointerdown', e => move(...at(e)));
   svg.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') leave(); });
-  document.addEventListener('pointerdown', e => { if (!svg.contains(e.target)) leave(); }, { passive: true });
+  tracked.add({ svg, leave });
+  if (!trackBound) {
+    trackBound = true;
+    document.addEventListener('pointerdown', onDocDown, { passive: true });
+  }
+}
+// One listener for every chart: a tap elsewhere hides the open tooltips. Charts no longer on screen are dropped.
+const tracked = new Set();
+let trackBound = false;
+function onDocDown(e) {
+  tracked.forEach(t => {
+    if (!t.svg.isConnected) { tracked.delete(t); return; }
+    if (!t.svg.contains(e.target)) t.leave();
+  });
 }
 
 // ---------- frame ----------

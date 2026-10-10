@@ -7,7 +7,7 @@ A personal assistant for your phone, running on free services:
 - **Food log and "what should I eat?".** Snap your meals (and a receipt); AI fills in the dish, ingredients, homemade or restaurant, and rough calories. When you can't decide, it asks a few quick questions and suggests three ideas from your habits.
 - **Chat.** Ask "what's due this week?", "what should I eat tonight?", "add kid's dentist Oct 20 at 3pm".
 - **Email watch (optional).** Emails from senders you choose (school, dentist, vet) are read by AI, and dates/to-dos show up for one-tap approval. Nothing outside the senders you choose is ever read.
-- **Phone notifications** via the free ntfy app: a morning brief and an evening check-in.
+- **Phone notifications** through Telegram: a morning brief and an evening check-in.
 
 ```
  Android home screen
@@ -17,7 +17,7 @@ A personal assistant for your phone, running on free services:
  └───────────────┘                 │                      │──▶│ Gemini API    │ free tier
         ▲                          │  daily triggers      │──▶│ Open-Meteo    │ weather, free
         │ push                     │                      │
-   ntfy app ◀───────────────────── └─────────────────────┘
+   Telegram ◀──────────────────── └─────────────────────┘
 ```
 
 Folders:
@@ -28,7 +28,7 @@ Folders:
 
 ## How it stays free
 
-Everything runs on free tiers: Apps Script, Google Sheets, GitHub Pages, Open-Meteo, ntfy, and the **Gemini API free tier**.
+Everything runs on free tiers: Apps Script, Google Sheets, GitHub Pages, Open-Meteo, Telegram, and the **Gemini API free tier**.
 
 Gemini's free tier gives each model its own daily request limit. The cheaper **Flash-Lite** models get a large daily quota; the smarter **Flash** models get a small one (recently around 20 requests a day). So Homebase splits the work:
 
@@ -74,7 +74,7 @@ The models are set in Settings → *AI models, usage & cost* (default `claude-ha
    - Under **Script Properties**, add `GEMINI_API_KEY` = your key.
 5. Back in the editor, choose the function **`setup`** and click **Run**. Approve the permissions: Sheets, Calendar, **View your email messages and settings** (read-only), connect to external services, and run when you're not present (triggers). Google will warn the app is unverified because you wrote it: **Advanced → Go to project**.
    Then choose **`authorizeDrive`** and click **Run** once, to approve the Drive permission and create the private photo folder.
-6. Open **Execution log**. Copy the **APP TOKEN** and the **ntfy topic**, and check the line saying which Gemini models were picked. (Lost them? Run `showToken`. Want to test AI? Run `testGemini`.)
+6. Open **Execution log**. Copy the **APP TOKEN**, and check the line saying which Gemini models were picked. (Lost them? Run `showToken`. Want to test AI? Run `testGemini`.)
 7. **Deploy → New deployment → Web app**:
    - Execute as: **Me**
    - Who has access: **Anyone** (the app token is what protects it)
@@ -102,15 +102,12 @@ The repository can be public: it holds no secrets. Your token is typed into the 
 
 Choose in the app under **Settings → Notifications**.
 
-**Telegram (recommended):** free and reliable.
+**Telegram:** free and reliable. Notifications are sent through Telegram only.
 1. In Telegram, message **@BotFather**, send `/newbot`, choose any name, and copy the **token** it gives you.
 2. In Apps Script → **Project Settings → Script Properties**, add `TELEGRAM_BOT_TOKEN` = that token.
-3. In Telegram, open your new bot and tap **Start**.
-4. In Homebase: **Settings → Notifications → Telegram → Link Telegram**. You'll get a confirmation message in Telegram.
+3. In Homebase: **Settings → Notifications → Open Telegram**. It opens your bot with a one-time code: tap **Start**.
+4. Back in Homebase, tap **Link Telegram**. You'll get a confirmation message in Telegram. (Each person links their own Telegram this way; only the chat that used your code is linked.)
 
-**ntfy (no account):** install **ntfy** from the Play Store, tap **+**, enter your topic from Settings (server: ntfy.sh), **Subscribe**. Caveat: ntfy's free server limits messages per IP address, and Apps Script sends from Google's shared IP addresses, so you may see "limit reached" even though you've sent very few. If that happens, switch to Telegram.
-
-If the chosen channel fails and the other one is set up, Homebase sends through the other one automatically.
 
 Test with **Settings → Send test notification**. If it arrives silently, enable sound for the app in Android **Settings → Notifications**.
 
@@ -136,7 +133,7 @@ The voice is chosen per phone in **Settings → Voice (this phone) → Bella's v
 - Or tap **+** on Tasks. **Let AI decide** picks the interval; **Every…** sets a fixed one; **One-time** is a to-do with a due date.
 - After two or three completions, AI-chosen intervals switch to your actual rhythm (shown as *learned*). Fixed intervals never change.
 - For kids' and pets' health, the doctor's or vet's schedule wins over AI defaults.
-- **Timed reminders:** any task can have its own reminder time. Say it to the chat ("remind me at 2pm to call the school", "dentist Friday 3pm, remind me 2 hours before", "remind me the night before at 8") or set **Reminder** in the task form (a time, and *same day / day before / 2 days before / week before*). At that time you get a Telegram or ntfy notification (whichever you use). Recurring tasks remind on each due day. Tasks without a reminder time still appear in the morning brief and evening check-in. Reminders go to the person who added the task. A check runs every 5 minutes, so a reminder can arrive up to 5 minutes after its time.
+- **Timed reminders:** any task can have its own reminder time. Say it to the chat ("remind me at 2pm to call the school", "dentist Friday 3pm, remind me 2 hours before", "remind me the night before at 8") or set **Reminder** in the task form (a time, and *same day / day before / 2 days before / week before*). At that time you get a Telegram notification. Recurring tasks remind on each due day. Tasks without a reminder time still appear in the morning brief and evening check-in. Reminders go to the person who added the task. A check runs every 5 minutes, so a reminder can arrive up to 5 minutes after its time.
 - **Email appointments** you accept on Home become tasks (with the time in the name, e.g. "Dental cleaning at 3pm"), not calendar events. Open the task to add a reminder time. The chat only adds calendar events when you ask for the calendar.
 
 **Appointments**
@@ -206,9 +203,11 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - Replies in the chat are shown as text, not read aloud (also after using 🎤). 🔊 on any reply reads it. For a spoken conversation, use talk mode.
 - Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), **Bella's voice** (a natural Chirp voice, see setup step 6, or the phone voice), the **phone voice** used as the backup, and the **speed**, with a ▶ Test button. Each phone keeps its own choice. The assistant replies in the language you use.
 
+**Web search (free, through Gemini).** Ask Bella to *look something up* ("look up when the library closes", "search for…", "ask Gemini…") and she asks Gemini with Google Search turned on, then answers in her own voice; in the chat the sources appear as links. She only searches when you ask. It uses your existing Gemini key and Gemini 2.5 (Google's free allowance is about 500 searches a day; Homebase stops at **450 a day for the whole family**, set in `web_search_daily_cap`). It is not available while a child is talking. Settings → AI models shows how many searches were used today.
+
 **Talk mode (hands-free, e.g. while driving)**
 - Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or just by opening Homebase (*"Hey Google, open Homebase"*): **Settings → Voice → Start talking to Bella when I open Homebase** is on by default (turn it off per phone). Opening Homebase from a notification never starts it; tap **End** to type instead.
-- Bella says *"Hello, I'm Bella."* and listens. Just talk: **as soon as you finish speaking**, it sends by itself (no waiting), she answers out loud, and listens again. If you pause mid-sentence, the first part may go on its own; just keep talking. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
+- Bella says *"Hi, Sam, how can I help?"* (using your name) if it has been more than 6 hours since you last used her on this phone, otherwise just *"I am here."*, and listens. Just talk: **as soon as you finish speaking**, it sends by itself (no waiting), she answers out loud, and listens again. If you pause mid-sentence, the first part may go on its own; just keep talking. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
 - Say **"thanks"** or **"bye"** to finish (also "thank you", "goodbye", 谢谢, 拜拜, 再见). "Thanks, also add eggs" is not goodbye: it's sent. Say **"never mind"** or **"cancel"** to drop what you just said. If you say nothing twice in a row, it closes.
 - Tap the circle while Bella talks to cut her off and speak; tap while you talk to send right away. **End** closes it.
 - The screen stays on while it's open. Replies are kept short and spoken-style; everything also appears in Chat. Charts aren't made in talk mode.
@@ -221,8 +220,8 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - **Shared:** tasks (unless marked *Only me*), the food log, email suggestions on Today, and the calendars you tick **Family** in Settings → Calendars. Events family members add go to the calendar chosen under *Events family members add go to* (e.g. Family), never to your own calendar.
 - **Private:** each person's chat, and tasks marked **Only me** (in the task screen, or say "just for me" in chat). Only the person who added a task can make it private.
 - **Only you:** your email (your chat can search all of it if you allow it; members never can), Settings for the household (location, calendars, email, AI, people), and the Family list.
-- **Notifications:** everyone sets up their own in their Settings (their own ntfy topic, or Telegram: they open the family bot, tap Start, then *Link Telegram*). Morning brief and evening check-in go to each person with their own tasks and calendars.
-- **Opening Homebase from a notification:** Telegram always opens Telegram when you tap its notification (Android sends the tap to the app that posted it). Each message has a button (*Open Home*, *Open Tasks*) that jumps straight to that tab. To make that button open the installed Homebase app instead of a browser page inside Telegram: in Telegram → Settings → Chat Settings, turn off the in-app browser. Homebase must be installed with Chrome's **Install app** (⋮ → Install app), not a plain home-screen shortcut. ntfy notifications open Homebase directly when tapped.
+- **Notifications:** everyone sets up their own in their Settings (they tap *Open Telegram* in Settings, press Start, then *Link Telegram*). Morning brief and evening check-in go to each person with their own tasks and calendars.
+- **Opening Homebase from a notification:** Telegram always opens Telegram when you tap its notification (Android sends the tap to the app that posted it). Each message has a button (*Open Home*, *Open Tasks*) that jumps straight to that tab. To make that button open the installed Homebase app instead of a browser page inside Telegram: in Telegram → Settings → Chat Settings, turn off the in-app browser. Homebase must be installed with Chrome's **Install app** (⋮ → Install app), not a plain home-screen shortcut.
 - **Pause / New link / Remove** in the Family list: pausing or a new link stops the old link at once; removing also deletes their chat and *Only me* tasks.
 - Security: the invite code is stored only as a hash. Anyone with someone's link can act as them, so send links privately and make a new one if a phone is lost. Everything still runs under your Google account, so events and tasks they add are made by your account.
 
@@ -291,7 +290,7 @@ This list is also the **only** email the chat can see. Ask "anything from the sc
 | "Gmail is not defined" | In the Apps Script editor, **Services → + → Gmail API → Add** (or re-paste `appsscript.json`). |
 | Gemini 404 / model not found | A model was retired. With `auto`, it re-picks on the next request; with a fixed name, change it in Settings. |
 | Weather says location not set | Settings → Use my location → Save settings. |
-| No notifications | Check the ntfy topic matches, then use Send test notification. Allow ntfy to run in background (Android battery settings). |
+| No notifications | Link Telegram again (Settings → Notifications), then use Send test notification. Check `TELEGRAM_BOT_TOKEN` is set. |
 | "Drive permission missing" | Re-paste `appsscript.json`, run `authorizeDrive` in the editor, approve, then Deploy → New version. |
 | Bella uses the phone voice, not the natural one | Settings → Voice shows why. Usually: `TTS_API_KEY` missing, the Cloud Text-to-Speech API not enabled, or billing not turned on for that Google Cloud project. Run `testVoice`. Also once this month's free amount is used up. |
 | Talk mode doesn't start with "Hey Google, open Homebase" | Turn on Settings → Voice → *Start talking to Bella when I open Homebase* (it's per phone). If Homebase was already open in the background, it starts when you come back after 10+ minutes; otherwise tap 🎙. |

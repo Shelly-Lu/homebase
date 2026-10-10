@@ -20,7 +20,7 @@
     </button>
   </header>
 
-  <main id="view" aria-live="polite"></main>
+  <main id="view"></main>
 
   <nav class="tabbar" id="tabbar">
     <a href="#today" data-tab="today">
@@ -40,11 +40,12 @@
   <div id="modal" class="modal" hidden>
     <div class="sheet" role="dialog" aria-modal="true">
       <div class="sheet-handle"></div>
+      <button type="button" class="sr-only" id="modalClose">Close</button>
       <div id="modalBody"></div>
     </div>
   </div>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <div id="bootError" class="boot-error" hidden>
     <b>Homebase couldn't start.</b>
@@ -63,12 +64,12 @@
       }
       window.addEventListener('error', function (e) { errs.push((e.message || 'Error') + (e.filename ? ' (' + e.filename.split('/').pop() + ')' : '')); if (!window.__hbBooted) show(); }, true);
       window.addEventListener('unhandledrejection', function (e) { errs.push(String(e.reason && e.reason.message || e.reason)); });
-      setTimeout(show, 6000);
+      setTimeout(show, 6000);   // app.js hides this box once it has started (also if it shows up late)
       document.getElementById('bootReset').onclick = function () {
         var p = [];
         if (navigator.serviceWorker) p.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
         if (window.caches) p.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
-        try { localStorage.removeItem('homebase.today'); } catch (e) {}
+        try { localStorage.removeItem('homebase.today'); localStorage.removeItem('homebase.cache.v2'); } catch (e) {}
         Promise.all(p).finally(function () { location.replace(location.pathname + '?r=' + Date.now() + '#today'); });
       };
     })();

@@ -192,10 +192,20 @@ details.why summary { cursor: pointer; color: var(--ink-2); font-size: 14px; mar
 
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 84px);
-  background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; z-index: 30; font-size: 14.5px;
+  background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; z-index: 70; font-size: 14.5px;
   max-width: calc(100% - 32px); box-shadow: var(--shadow);
 }
 .toast.err { background: var(--warn); color: #fff; }
+.upd-toast { top: calc(env(safe-area-inset-top) + 62px); bottom: auto; border: 0; font: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.upd-retry { padding: 0; font-size: inherit; text-decoration: underline; vertical-align: baseline; }
+/* who the assistant is talking with (after "This is Sam") */
+.spk-row { margin: 8px 0 0; }
+.spk-row[hidden] { display: none; }
+.spk-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 4px 2px 10px; }
+.spk-x { border: 0; background: none; color: inherit; font: inherit; font-size: 13px; line-height: 1; padding: 5px 7px; border-radius: 999px; cursor: pointer; }
+.composer .spk-row { margin: 0 0 6px; }
+.talk .spk-chip { color: #9fd0ad; background: rgba(143, 191, 159, .14); }
 
 .spinner { width: 18px; height: 18px; border: 2.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -216,6 +226,11 @@ details.why summary { cursor: pointer; color: var(--ink-2); font-size: 14px; mar
 .boot-error[hidden] { display: none; }
 
 .chan-box { background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.chan-box .row { flex-wrap: wrap; }
+.chan-box #sTgStatus { flex: 1 1 100%; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+a.btn[hidden] { display: none; }
+.chan-box .btn:not(.primary) { background: var(--surface); }
 .steps { margin: 8px 0 12px; padding-left: 20px; color: var(--ink-2); }
 .steps li { margin: 4px 0; }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--surface); padding: 1px 5px; border-radius: 6px; }
@@ -482,9 +497,9 @@ body.talking .tabbar, body.talking .composer { display: none; }
   padding: 12px 22px; font-size: 17px; font-weight: 600; cursor: pointer; min-height: 48px;
 }
 .talk-end:active { background: #2f2c27; }
-.talk-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; min-height: 0; }
+.talk-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; min-height: calc(min(58vw, 30vh, 240px) + 64px); }
 .talk-orb {
-  position: relative; width: min(58vw, 240px); aspect-ratio: 1; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  position: relative; width: min(58vw, 30vh, 240px); aspect-ratio: 1; flex: none; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
   background: radial-gradient(circle at 35% 30%, #9fd0ad, #3f6b52 70%); box-shadow: 0 0 0 0 rgba(143, 191, 159, .35);
   transition: transform .25s ease, filter .25s ease;
 }
@@ -493,12 +508,13 @@ body.talking .tabbar, body.talking .composer { display: none; }
 .talk-dot { position: absolute; inset: 34%; border-radius: 50%; background: rgba(255, 255, 255, .18); }
 .talk[data-state="listening"] .talk-orb { animation: talkBreath 1.6s ease-in-out infinite; }
 .talk[data-state="listening"] .talk-ring { opacity: 1; animation: talkRing 1.6s ease-out infinite; }
-.talk[data-state="thinking"] .talk-orb { filter: saturate(.55) brightness(.85); }
-.talk[data-state="thinking"] .talk-dot { inset: 30%; border: 4px solid rgba(255, 255, 255, .55); border-right-color: transparent; background: none; animation: spin .9s linear infinite; }
+.talk[data-state="thinking"] .talk-orb, .talk[data-state="fetching"] .talk-orb { filter: saturate(.55) brightness(.85); }
+.talk[data-state="thinking"] .talk-dot, .talk[data-state="fetching"] .talk-dot { inset: 30%; border: 4px solid rgba(255, 255, 255, .55); border-right-color: transparent; background: none; animation: spin .9s linear infinite; }
 .talk[data-state="speaking"] .talk-orb { background: radial-gradient(circle at 35% 30%, #f0d48c, #b07d2a 72%); animation: talkSpeak .7s ease-in-out infinite alternate; }
 .talk[data-state="idle"] .talk-orb { filter: grayscale(.6) brightness(.7); }
 .talk-state { font-size: 22px; font-weight: 600; min-height: 1.4em; text-align: center; max-width: 30ch; }
 .talk-log { display: flex; flex-direction: column; gap: 10px; max-height: 38vh; overflow-y: auto; }
+.talk-log > * { flex-shrink: 0; }
 .talk-heard { color: #a69d90; font-size: 18px; min-height: 1.4em; }
 .talk-heard:not(:empty)::before { content: "You: "; color: #7d756a; }
 .talk-reply { font-size: 21px; line-height: 1.4; }
