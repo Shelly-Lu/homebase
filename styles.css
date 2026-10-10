@@ -237,6 +237,8 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
 .row-field { flex-direction: row; align-items: center; gap: 10px; }
 .row-field input[type=checkbox] { margin: 0; flex: none; }
 .row-field span { margin: 0; }
+label.check-field { display: flex; }
+label.field.row-field > span { font-size: 15px; font-weight: 500; color: var(--ink); }
 
 /* ---- people ---- */
 .person-row { border-top: 1px solid var(--line); padding: 10px 0 2px; }
@@ -462,3 +464,46 @@ details.later[open] > summary::after { content: '▴'; }
 .idea-btns { margin-top: 8px; }
 .idea .idea-btns .btn { margin-top: 0; }
 .tips { margin: 12px 0 0; padding: 10px 12px; background: var(--surface-2); border-radius: 12px; font-size: 14.5px; color: var(--ink-2); }
+
+/* ---------- talk mode (hands-free conversation) ---------- */
+.top-acts { display: flex; align-items: center; gap: 2px; }
+body.talking { overflow: hidden; }
+body.talking .tabbar, body.talking .composer { display: none; }
+.talk {
+  position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column;
+  padding: calc(env(safe-area-inset-top) + 14px) 20px calc(env(safe-area-inset-bottom) + 20px);
+  background: #12110f; color: #f4efe6;
+}
+.talk-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.talk-name { font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: -.01em; }
+.talk-sub { color: #a69d90; font-size: 14px; margin-top: 2px; }
+.talk-end {
+  border: 1px solid #3b3731; background: #23211d; color: #f4efe6; border-radius: 999px;
+  padding: 12px 22px; font-size: 17px; font-weight: 600; cursor: pointer; min-height: 48px;
+}
+.talk-end:active { background: #2f2c27; }
+.talk-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; min-height: 0; }
+.talk-orb {
+  position: relative; width: min(58vw, 240px); aspect-ratio: 1; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  background: radial-gradient(circle at 35% 30%, #9fd0ad, #3f6b52 70%); box-shadow: 0 0 0 0 rgba(143, 191, 159, .35);
+  transition: transform .25s ease, filter .25s ease;
+}
+.talk-orb:active { transform: scale(.97); }
+.talk-ring { position: absolute; inset: -14px; border-radius: 50%; border: 2px solid rgba(143, 191, 159, .45); opacity: 0; }
+.talk-dot { position: absolute; inset: 34%; border-radius: 50%; background: rgba(255, 255, 255, .18); }
+.talk[data-state="listening"] .talk-orb { animation: talkBreath 1.6s ease-in-out infinite; }
+.talk[data-state="listening"] .talk-ring { opacity: 1; animation: talkRing 1.6s ease-out infinite; }
+.talk[data-state="thinking"] .talk-orb { filter: saturate(.55) brightness(.85); }
+.talk[data-state="thinking"] .talk-dot { inset: 30%; border: 4px solid rgba(255, 255, 255, .55); border-right-color: transparent; background: none; animation: spin .9s linear infinite; }
+.talk[data-state="speaking"] .talk-orb { background: radial-gradient(circle at 35% 30%, #f0d48c, #b07d2a 72%); animation: talkSpeak .7s ease-in-out infinite alternate; }
+.talk[data-state="idle"] .talk-orb { filter: grayscale(.6) brightness(.7); }
+.talk-state { font-size: 22px; font-weight: 600; min-height: 1.4em; text-align: center; max-width: 30ch; }
+.talk-log { display: flex; flex-direction: column; gap: 10px; max-height: 38vh; overflow-y: auto; }
+.talk-heard { color: #a69d90; font-size: 18px; min-height: 1.4em; }
+.talk-heard:not(:empty)::before { content: "You: "; color: #7d756a; }
+.talk-reply { font-size: 21px; line-height: 1.4; }
+.talk-done { color: #9fd0ad; font-size: 15px; display: flex; flex-direction: column; gap: 4px; }
+@keyframes talkBreath { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+@keyframes talkRing { from { transform: scale(.92); opacity: .9; } to { transform: scale(1.18); opacity: 0; } }
+@keyframes talkSpeak { from { transform: scale(.98); } to { transform: scale(1.04); } }
+@media (prefers-reduced-motion: reduce) { .talk-orb, .talk-ring, .talk-dot { animation: none !important; } }

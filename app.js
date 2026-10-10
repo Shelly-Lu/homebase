@@ -167,6 +167,8 @@ function refreshAll() {
       if (hi) { sessionStorage.removeItem('homebase.welcome'); toast(`Welcome, ${b.me.name}! You're signed in.`); }
     }
     if (b.family !== undefined && b.family !== null) state.familyCount = b.family;
+    if (b.assistant) lsSet('homebase.assistant', b.assistant);
+    if (b.voice_ready !== undefined) lsSet('homebase.voiceReady', b.voice_ready ? '1' : '0');
     if (b.tasks) state.tasks = b.tasks;
     if (b.meals) state.meals = b.meals;
     if (b.taste) state.taste = b.taste;
@@ -1248,16 +1250,33 @@ function showLogged(r) {
 }
 
 // Settings card: how this phone listens and reads replies aloud (saved on this phone only).
+const CHIRP_FEMALE = ['Aoede', 'Kore', 'Leda', 'Zephyr', 'Autonoe', 'Callirrhoe', 'Despina', 'Erinome', 'Laomedeia', 'Sulafat', 'Achernar', 'Gacrux', 'Pulcherrima', 'Vindemiatrix'];
+const CHIRP_MALE = ['Puck', 'Charon', 'Fenrir', 'Orus', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Enceladus', 'Iapetus', 'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Umbriel', 'Zubenelgenubi'];
+const assistantName = () => lsGet('homebase.assistant', 'Bella') || 'Bella';
+// The natural (Chirp) voice picked on this phone, or null for the phone's own voice.
+function chirpVoice() {
+  const v = lsGet('homebase.chirpVoice', 'Aoede');
+  if (v === 'phone' || lsGet('homebase.voiceReady', '') === '0') return null;
+  return CHIRP_FEMALE.includes(v) || CHIRP_MALE.includes(v) ? v : 'Aoede';
+}
 function voiceCardHtml() {
   const cur = lsGet('homebase.voiceLang', '');
   const rate = Number(lsGet('homebase.voiceRate', '1')) || 1;
+  const pick = lsGet('homebase.chirpVoice', 'Aoede');
+  const opt = v => `<option value="${v}" ${pick === v ? 'selected' : ''}>${v}</option>`;
+  const nm = esc(assistantName());
   return `<div class="card" id="voiceCard">
       <h2>Voice (this phone)</h2>
       <label class="field"><span>I speak</span><select id="sVoiceLang">${VOICE_LANGS.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="field"><span>Reading voice</span><select id="sVoiceName"></select></label>
+      <label class="field"><span>${nm}'s voice</span><select id="sChirp">
+        <optgroup label="Natural voice · female">${CHIRP_FEMALE.map(opt).join('')}</optgroup>
+        <optgroup label="Natural voice · male">${CHIRP_MALE.map(opt).join('')}</optgroup>
+        <option value="phone" ${pick === 'phone' ? 'selected' : ''}>Phone voice (offline)</option></select></label>
+      <div class="muted small" id="sChirpNote" style="margin:-4px 0 12px"></div>
+      <label class="field"><span>Phone voice (used when the natural voice isn't available)</span><select id="sVoiceName"></select></label>
       <label class="field"><span>Speed <b id="sRateVal">${rate.toFixed(1)}×</b></span><input type="range" id="sVoiceRate" min="0.7" max="1.5" step="0.1" value="${rate}"></label>
-      <div class="row"><button type="button" class="btn small" id="sVoiceTest">▶ Test</button>
-        <span class="muted small grow">“Online” voices sound most natural. For more, install voices in Android Settings → Text-to-speech.</span></div>
+      <label class="field check-field row-field"><input type="checkbox" id="sTalkOpen" ${lsGet('homebase.talkOnOpen', '0') === '1' ? 'checked' : ''}><span>Start talking to ${nm} when I open Homebase <span class="muted small">(for “Hey Google, open Homebase”; not when a notification opens it)</span></span></label>
+      <div class="row"><button type="button" class="btn small" id="sVoiceTest">▶ Test</button><button type="button" class="btn small" id="sTalkNow">🎙 Talk to ${nm}</button></div>
     </div>`;
 }
 const langFamily = l => String(l || '').replace('_', '-').slice(0, 2).toLowerCase();
@@ -1267,7 +1286,7 @@ function allVoices() {
 function voiceLabel(v) {
   return `${v.name.replace(/\s*\((?:[^)]*)\)\s*$/, '')} · ${String(v.lang).replace('_', '-')} · ${v.localService === false ? 'online' : 'on phone'}`;
 }
-// The voice to read with: your pick for that language, else an online voice for it, else any match.
+// The phone voice to read with: your pick for that language, else an online voice for it, else any match.
 function pickVoice(lang) {
   const fam = langFamily(lang), vs = allVoices();
   if (!vs.length) return null;
@@ -1279,8 +1298,9 @@ function pickVoice(lang) {
     || fams.find(v => v.localService === false) || fams[0] || null;
 }
 function sampleLine(lang) {
-  return langFamily(lang) === 'zh' ? (lang === 'zh-HK' ? '你好，我係 Homebase。今日記得帶遮。' : '你好，我是 Homebase。今天记得带伞。')
-    : "Hi, I'm Homebase. Don't forget your umbrella today.";
+  const n = assistantName();
+  return langFamily(lang) === 'zh' ? (lang === 'zh-HK' ? `你好，我係${n}。今日記得帶遮。` : `你好，我是${n}。今天记得带伞。`)
+    : `Hi, I'm ${n}. Don't forget your umbrella today.`;
 }
 function bindVoiceCard() {
   const sel = $('#sVoiceName'); if (!sel) return;
@@ -1297,14 +1317,24 @@ function bindVoiceCard() {
   fill();
   try { speechSynthesis.addEventListener('voiceschanged', fill); } catch { /* old browser */ }
   setTimeout(fill, 700);
+  const note = $('#sChirpNote');
+  const paintNote = st => {
+    if (!note) return;
+    if (!st) { note.textContent = ''; return; }
+    if (!st.ready) { note.innerHTML = 'Natural voices need a one-time Google Cloud key (<code>TTS_API_KEY</code>, see the README, “Natural voice”). Until then the phone voice reads.'; return; }
+    const pct = st.cap ? Math.min(100, Math.round(st.used / st.cap * 100)) : 100;
+    note.textContent = `Natural voice: ${st.used.toLocaleString()} of ${st.cap.toLocaleString()} free characters used this month (${pct}%). After that, the phone voice reads until next month.`;
+  };
+  api('voice.status').then(st => { lsSet('homebase.voiceReady', st.ready ? '1' : '0'); if (st.assistant) lsSet('homebase.assistant', st.assistant); paintNote(st); })
+    .catch(() => paintNote(null));
+  $('#sChirp').addEventListener('change', e => { lsSet('homebase.chirpVoice', e.target.value); speak(sampleLine(voiceLang())); });
   $('#sVoiceLang').addEventListener('change', e => { lsSet('homebase.voiceLang', e.target.value); fill(); toast('Saved on this phone.'); });
-  sel.addEventListener('change', () => { lsSet('homebase.voiceName.' + langFamily(voiceLang()), sel.value); speak(sampleLine(voiceLang())); });
+  sel.addEventListener('change', () => { lsSet('homebase.voiceName.' + langFamily(voiceLang()), sel.value); speak(sampleLine(voiceLang()), { phone: true }); });
   $('#sVoiceRate').addEventListener('input', e => { lsSet('homebase.voiceRate', e.target.value); $('#sRateVal').textContent = Number(e.target.value).toFixed(1) + '×'; });
   $('#sVoiceRate').addEventListener('change', () => speak(sampleLine(voiceLang())));
-  $('#sVoiceTest').onclick = () => {
-    if (!('speechSynthesis' in window)) return toast("This browser can't read aloud.", true);
-    speak(sampleLine(voiceLang()));
-  };
+  $('#sTalkOpen').addEventListener('change', e => { lsSet('homebase.talkOnOpen', e.target.checked ? '1' : '0'); toast(e.target.checked ? `${assistantName()} will greet you when you open Homebase.` : 'Saved on this phone.'); });
+  $('#sTalkNow').onclick = () => openTalk();
+  $('#sVoiceTest').onclick = () => speak(sampleLine(voiceLang()));
 }
 
 // Settings sections fold up: tap a heading to open it. Open ones are remembered on this phone.
@@ -1333,7 +1363,7 @@ function foldCards(root, openByDefault = []) {
 
 // ================= VOICE =================
 // Speech → text uses Chrome's speech recognition (audio goes to Google, like keyboard voice typing).
-// Replies are read aloud by the phone's own voice, only when you used the mic.
+// Replies are read aloud with the natural voice (Google Cloud Chirp, via the backend) or the phone's own voice.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const VOICE_LANGS = [['', 'Same as this phone'], ['en-US', 'English'], ['zh-CN', '中文（普通话）'], ['zh-TW', '中文（台灣）'], ['zh-HK', '粵語']];
 function voiceLang() {
@@ -1344,7 +1374,7 @@ let activeRec = null;
 function dictate(textarea, btn, onDone) {
   if (!SR) return toast("Voice input isn't available here. Open Homebase in Chrome, or use the mic on your keyboard.", true);
   if (activeRec) { activeRec.stop(); return; }
-  try { speechSynthesis?.cancel(); } catch { /* nothing playing */ }
+  stopSpeaking();
   const rec = new SR();
   rec.lang = voiceLang(); rec.interimResults = true; rec.continuous = false;
   const base = textarea.value.trim() ? textarea.value.trim() + ' ' : '';
@@ -1366,20 +1396,374 @@ function dictate(textarea, btn, onDone) {
   try { rec.start(); } catch (e) { activeRec = null; btn.classList.remove('rec'); fail(e); }
 }
 function plainForSpeech(t) {
-  return String(t || '').replace(/\*\*|__|`|#+ /g, '').replace(/^\s*[-*•] /gm, '').replace(/https?:\/\/\S+/g, 'link').slice(0, 1200);
+  return String(t || '').replace(/\*\*|__|`|#+ /g, '').replace(/^\s*[-*•] /gm, '').replace(/https?:\/\/\S+/g, 'link')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').slice(0, 1200);
 }
-function speak(text) {
-  if (!('speechSynthesis' in window) || !text) return;
+// Which Chirp language to ask for: Chinese text → Mandarin (Cantonese if you speak 粵語), else your English variant.
+function ttsLang(text) {
+  const l = voiceLang();
+  if (/[一-鿿]/.test(text)) return l === 'zh-HK' ? 'yue-HK' : 'cmn-CN';
+  return /^en-(US|GB|AU|IN)$/.test(l) ? l : 'en-US';
+}
+
+// One thing plays at a time. stopSpeaking() ends it (and resolves the say() that started it).
+let player = null;            // one <audio> for everything Homebase says (made on first use)
+let playing = null;           // {stop()} for what's playing now
+let speakSeq = 0;
+function stopSpeaking() {
+  speakSeq++;
+  try { speechSynthesis.cancel(); } catch { /* no speech */ }
+  const p = playing; playing = null;
+  p?.stop();
+}
+function playAudio(src) {
+  return new Promise(resolve => {
+    if (!player && typeof Audio === 'function') { player = new Audio(); player.preload = 'auto'; }
+    if (!player) return resolve('error');
+    let done = false;
+    const end = r => { if (done) return; done = true; player.onended = player.onerror = null; if (playing?.tag === tag) playing = null; resolve(r); };
+    const tag = {};
+    playing = { tag, stop: () => { try { player.pause(); } catch { /* fine */ } end('ok'); } };
+    player.onended = () => end('ok');
+    player.onerror = () => end('error');
+    player.src = src;
+    player.play().catch(e => end(e && e.name === 'NotAllowedError' ? 'blocked' : 'error'));
+  });
+}
+function phoneSpeak(text) {
+  return new Promise(resolve => {
+    if (!('speechSynthesis' in window) || !text) return resolve('error');
+    let done = false, timer = null;
+    const end = r => { if (done) return; done = true; clearTimeout(timer); if (playing?.tag === tag) playing = null; resolve(r); };
+    const tag = {};
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = /[一-鿿]/.test(text) ? (voiceLang().startsWith('zh') ? voiceLang() : 'zh-CN') : (voiceLang().startsWith('zh') ? 'en-US' : voiceLang());
+      const v = pickVoice(u.lang);
+      if (v) { u.voice = v; u.lang = String(v.lang).replace('_', '-'); }
+      u.rate = Number(lsGet('homebase.voiceRate', '1')) || 1;
+      u.onend = () => end('ok');
+      u.onerror = e => end(e.error === 'not-allowed' ? 'blocked' : e.error === 'interrupted' || e.error === 'canceled' ? 'ok' : 'error');
+      playing = { tag, stop: () => { try { speechSynthesis.cancel(); } catch { /* fine */ } end('ok'); } };
+      speechSynthesis.speak(u);
+      timer = setTimeout(() => end('ok'), 4000 + text.length * 90);   // Android sometimes never reports the end
+    } catch { end('error'); }
+  });
+}
+// Short phrases said every time (greeting, "Okay.") are kept on the phone, so they play instantly.
+const KEEP_PREFIX = 'homebase.tts.';
+function keptKey(text, voice) { return KEEP_PREFIX + voice + '.' + ttsLang(text) + '.' + (Number(lsGet('homebase.voiceRate', '1')) || 1) + '.' + text; }
+let voiceWarned = false;
+async function naturalAudio(text, voice, keep) {
+  const k = keep ? keptKey(text, voice) : '';
+  if (k) { const hit = lsGet(k, ''); if (hit) return 'data:audio/mpeg;base64,' + hit; }
+  const r = await api('voice.speak', { text, voice, lang: ttsLang(text), rate: Number(lsGet('homebase.voiceRate', '1')) || 1 }, { timeoutMs: 20000 });
+  if (r.audio) {
+    lsSet('homebase.voiceReady', '1');
+    if (k && r.audio.length < 120000) lsSet(k, r.audio);
+    return 'data:' + (r.mime || 'audio/mpeg') + ';base64,' + r.audio;
+  }
+  if (r.reason === 'no_key') lsSet('homebase.voiceReady', '0');
+  else if (r.reason && r.reason !== 'empty' && !voiceWarned) {
+    voiceWarned = true;
+    toast(r.reason === 'monthly_limit' ? 'This month\'s free natural-voice characters are used up; using the phone voice until next month.' : r.reason, r.reason !== 'monthly_limit');
+  }
+  return null;
+}
+/**
+ * Reads text aloud. Resolves when it has finished (or was stopped) with 'ok', 'blocked' (the browser wants a tap
+ * first) or 'error'. opts.keep keeps the audio on the phone; opts.phone uses the phone voice.
+ */
+async function say(text, opts = {}) {
+  const plain = plainForSpeech(text).trim();
+  if (!plain) return 'ok';
+  stopSpeaking();
+  const my = speakSeq;
+  const voice = opts.phone ? null : chirpVoice();
+  if (voice && isConfigured()) {
+    try {
+      const src = await naturalAudio(plain, voice, opts.keep);
+      if (my !== speakSeq) return 'ok';                   // something else started meanwhile
+      if (src) { const r = await playAudio(src); if (r !== 'error') return r; }
+    } catch (e) { console.warn('natural voice:', e.message); }
+    if (my !== speakSeq) return 'ok';
+  }
+  return phoneSpeak(plain);
+}
+function speak(text, opts) { say(text, opts); }
+
+// ================= TALK MODE =================
+// Hands-free conversation: the assistant greets you, listens, sends after a 2.5-second pause, reads the answer
+// and listens again. "Thanks" or "bye" ends it; so do two silences in a row. "Never mind" drops what you said.
+const TALK_PAUSE_MS = 2500;          // quiet time after you speak before it sends
+const TALK_WAIT_MS = 9000;           // how long it waits for you to start talking
+const talk = { on: false, gen: 0, state: 'idle', rec: null, silences: 0, wake: null, finishNow: null, el: null, blocked: false, pushed: false };
+// lower case, no punctuation, without the assistant's name ("thanks Bella" = "thanks")
+function normSpeech(t) {
+  const nm = assistantName().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (' ' + String(t || '').toLowerCase().replace(/[.,!?;:"’。，！？、~]/g, ' ').replace(/\s+/g, ' ') + ' ')
+    .replace(new RegExp(' (?:hey )?' + nm + '(?= )', 'g'), ' ').replace(/\s+/g, ' ').trim();
+}
+const END_RE = /^(?:(?:ok|okay|alright|great|perfect|cool)\s+)?(?:thanks|thank you|thank you so much|thanks a lot|thanks so much|bye|bye bye|goodbye|good bye|thanks bye|thank you bye|thanks goodbye|thank you goodbye|谢谢|謝謝|多谢|多謝|拜拜|再见|再見|谢谢 再见|謝謝 再見)$/;
+const CANCEL_RE = /^(?:never ?mind|cancel|cancel that|forget it|算了|取消|唔使)$/;
+
+function talkGreeting() { return langFamily(voiceLang()) === 'zh' ? `我在。有什么可以帮你？` : `I'm here. How can I help?`; }
+
+function talkHtml() {
+  const nm = esc(assistantName());
+  return `<div class="talk-top"><div><div class="talk-name">${nm}</div><div class="talk-sub">Say “thanks” or “bye” to finish</div></div>
+      <button type="button" class="talk-end" id="talkEnd">End</button></div>
+    <div class="talk-mid">
+      <button type="button" class="talk-orb" id="talkOrb" aria-label="Talk"><span class="talk-ring"></span><span class="talk-dot"></span></button>
+      <div class="talk-state" id="talkState" aria-live="polite"></div>
+    </div>
+    <div class="talk-log">
+      <div class="talk-heard" id="talkHeard"></div>
+      <div class="talk-reply" id="talkReply"></div>
+      <div class="talk-done" id="talkDone"></div>
+    </div>`;
+}
+function setTalk(st, label) {
+  talk.state = st;
+  if (!talk.el) return;
+  talk.el.dataset.state = st;
+  $('#talkState', talk.el).textContent = label ?? ({ listening: 'Listening…', thinking: 'Thinking…', speaking: '', idle: 'Tap to talk' }[st] || '');
+}
+const talkLine = (id, html) => { const el = talk.el && $('#' + id, talk.el); if (el) el.innerHTML = html; };
+
+async function keepAwake() {
+  try { if ('wakeLock' in navigator && !talk.wake && document.visibilityState === 'visible') { talk.wake = await navigator.wakeLock.request('screen'); talk.wake.addEventListener?.('release', () => { talk.wake = null; }); } }
+  catch { /* battery saver can refuse; fine */ }
+}
+
+function openTalk({ auto = false } = {}) {
+  if (talk.on) return;
+  if (!isConfigured()) { location.hash = '#settings'; return; }
+  if (!SR) return toast("Talk mode needs Chrome's speech recognition. Open Homebase in Chrome.", true);
+  closeModal();
+  if (activeRec) { try { activeRec.abort(); } catch { /* fine */ } }
+  talk.on = true; talk.silences = 0; talk.gen++; talk.blocked = false;
+  const el = document.createElement('div');
+  el.className = 'talk'; el.id = 'talk'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Talk to ' + assistantName());
+  el.innerHTML = talkHtml();
+  document.body.appendChild(el); document.body.classList.add('talking');
+  talk.el = el;
+  $('#talkEnd', el).onclick = () => closeTalk();
+  $('#talkOrb', el).onclick = talkTap;
+  try { history.pushState({ talk: 1 }, ''); talk.pushed = true; } catch { talk.pushed = false; }
+  keepAwake();
+  talkGreet(auto);
+}
+function closeTalk(fromBack = false) {
+  if (!talk.on) return;
+  talk.on = false; talk.gen++;
+  try { talk.rec?.abort(); } catch { /* fine */ }
+  talk.rec = null; talk.finishNow = null;
+  stopSpeaking();
+  try { talk.wake?.release(); } catch { /* fine */ }
+  talk.wake = null;
+  talk.el?.remove(); talk.el = null;
+  document.body.classList.remove('talking');
+  if (talk.pushed && !fromBack) { talk.pushed = false; try { history.back(); } catch { /* fine */ } }
+  talk.pushed = false;
+  if (currentTab() === 'chat') paintChat();
+}
+window.addEventListener('popstate', () => { if (talk.on) closeTalk(true); });
+
+async function talkSay(text, opts) {
+  const g = talk.gen;
+  setTalk('speaking', '');
+  const r = await say(text, opts);
+  if (!talk.on || g !== talk.gen) return 'stopped';
+  return r;
+}
+async function talkGreet(auto) {
+  talkLine('talkReply', esc(talkGreeting()));
+  const r = await talkSay(talkGreeting(), { keep: true });
+  if (r === 'stopped') return;
+  if (r === 'blocked') {                    // the phone wants one tap before Homebase may speak or listen
+    talk.blocked = true;
+    setTalk('idle', 'Tap to start');
+    return;
+  }
+  talkListen();
+}
+function talkTap() {
+  if (!talk.on) return;
+  if (talk.state === 'speaking') { stopSpeaking(); return; }               // interrupt: it goes straight to listening
+  if (talk.state === 'listening') { talk.finishNow?.(true); return; }       // done talking: send now
+  if (talk.state === 'idle') {
+    keepAwake();
+    if (talk.blocked) { talk.blocked = false; talk.gen++; talkGreet(); }
+    else { talk.gen++; talk.silences = 0; talkListen(); }
+  }
+}
+
+// Listens until you've been quiet for TALK_PAUSE_MS (or for TALK_WAIT_MS without starting). Chrome on Android
+// stops listening after each short pause, so it quietly starts again until the pause is long enough.
+function listenFor(g) {
+  return new Promise((resolve, reject) => {
+    let committed = '', live = '', lastHeard = 0, errors = 0, finished = false, rec = null;
+    const started = Date.now();
+    const text = () => (committed + ' ' + live).replace(/\s+/g, ' ').trim();
+    const stopAll = () => { finished = true; clearInterval(tick); talk.finishNow = null; const r = rec; rec = null; talk.rec = null; try { r?.abort(); } catch { /* fine */ } };
+    const finish = () => { if (finished) return; const t = text(); stopAll(); resolve(t); };
+    const begin = () => {
+      if (finished) return;
+      if (!talk.on || g !== talk.gen) return finish();
+      const r = new SR();
+      rec = r; talk.rec = r;
+      r.lang = voiceLang(); r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+      r.onresult = e => {
+        if (r !== rec) return;
+        let t = '';
+        for (const x of e.results) t += x[0].transcript;
+        live = t.trim();
+        if (live) { lastHeard = Date.now(); talkLine('talkHeard', esc(text())); }
+      };
+      r.onerror = e => {
+        if (r !== rec) return;
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          stopAll();
+          reject(Object.assign(new Error('Allow the microphone for Homebase (Chrome → site settings → Microphone), then tap.'), { blocked: true }));
+        } else if (e.error !== 'no-speech' && e.error !== 'aborted') errors++;
+      };
+      r.onend = () => {
+        if (r !== rec) return;
+        committed = text(); live = '';
+        if (finished) return;
+        if (errors > 4) { stopAll(); return reject(new Error("I can't hear right now. Check the connection, then tap.")); }
+        setTimeout(begin, 80);
+      };
+      try { r.start(); } catch { errors++; setTimeout(begin, 400); }
+    };
+    const tick = setInterval(() => {
+      if (!talk.on || g !== talk.gen) return finish();
+      const now = Date.now();
+      if (lastHeard && text() && now - lastHeard >= TALK_PAUSE_MS) finish();
+      else if (!lastHeard && now - started >= TALK_WAIT_MS) finish();
+    }, 150);
+    talk.finishNow = finish;
+    begin();
+  });
+}
+
+async function talkListen() {
+  if (!talk.on) return;
+  const g = talk.gen;
+  setTalk('listening');
+  talkLine('talkHeard', '');
+  let heard;
+  try { heard = await listenFor(g); }
+  catch (e) {
+    if (!talk.on || g !== talk.gen) return;
+    talk.blocked = false;
+    setTalk('idle', e.message);
+    return;
+  }
+  if (!talk.on || g !== talk.gen) return;
+  if (!heard) {
+    if (++talk.silences >= 2) {
+      const r = await talkSay(`I'll be here if you need me.`, { keep: true });
+      if (r !== 'stopped') closeTalk();
+      return;
+    }
+    return talkListen();
+  }
+  talk.silences = 0;
+  talkLine('talkHeard', esc(heard));
+  const n = normSpeech(heard);
+  if (END_RE.test(n)) {
+    talkLine('talkReply', 'Bye!');
+    const r = await talkSay('Bye!', { keep: true });
+    if (r !== 'stopped') closeTalk();
+    return;
+  }
+  if (CANCEL_RE.test(n)) {
+    talkLine('talkReply', 'Okay.');
+    const r = await talkSay('Okay.', { keep: true });
+    if (r !== 'stopped' && talk.on && g === talk.gen) talkListen();
+    return;
+  }
+  await talkAsk(heard, g);
+}
+
+async function talkAsk(text, g) {
+  setTalk('thinking');
+  talkLine('talkReply', ''); talkLine('talkDone', '');
+  state.chat = state.chat || [];
+  state.chat.push({ role: 'user', content: text });
+  let reply, actions = [];
   try {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(plainForSpeech(text));
-    u.lang = /[\u4e00-\u9fff]/.test(text) ? (voiceLang().startsWith('zh') ? voiceLang() : 'zh-CN') : (voiceLang().startsWith('zh') ? 'en-US' : voiceLang());
-    const v = pickVoice(u.lang);
-    if (v) { u.voice = v; u.lang = String(v.lang).replace('_', '-'); }
-    u.rate = Number(lsGet('homebase.voiceRate', '1')) || 1;
-    speechSynthesis.speak(u);
-  } catch { /* no voice on this phone */ }
+    const r = await api('chat.send', { message: text, mode: 'talk' }, { timeoutMs: 120000 });
+    reply = r.reply || 'Done.';
+    actions = r.actions || [];
+    state.chat.push({ role: 'assistant', content: reply, charts: r.charts?.length ? r.charts : undefined });
+    saveCache();
+    invalidate(); refreshAll();
+  } catch (e) {
+    state.chat.pop();
+    reply = /took too long/.test(e.message) ? 'Sorry, that took too long. Please try again.' : `Sorry, I couldn't do that. ${e.message}`;
+  }
+  if (!talk.on || g !== talk.gen) return;
+  talkLine('talkReply', md(reply));
+  talkLine('talkDone', actions.map(a => `<div>✓ ${esc(a.label)}</div>`).join(''));
+  const r = await talkSay(reply);
+  if (r === 'stopped' || !talk.on || g !== talk.gen) return;
+  talkListen();
 }
+
+// Screen off or another app: stop listening; pick up again when you're back.
+document.addEventListener('visibilitychange', () => {
+  if (!talk.on) return;
+  if (document.hidden) {
+    talk.gen++;
+    try { talk.rec?.abort(); } catch { /* fine */ }
+    stopSpeaking();
+    setTalk('idle', 'Tap to continue');
+  } else {
+    keepAwake();
+    if (talk.state === 'idle' && !talk.blocked) { talk.gen++; talk.silences = 0; talkListen(); }
+  }
+});
+
+// "Hey Google, open Homebase" (or the icon) starts the app at #today with no "?from=notify": start talking if you turned
+// that on. The "Talk to Bella" shortcut (long-press the icon) always does. Coming back after 10+ minutes counts too.
+function wasOpenedByYou() {
+  const q = new URLSearchParams(location.search);
+  const hash = location.hash || '';
+  return !q.has('from') && (hash === '' || hash === '#today' || q.has('talk'));
+}
+function maybeTalkOnOpen() {
+  const q = new URLSearchParams(location.search);
+  const forced = q.has('talk');
+  const byYou = wasOpenedByYou();
+  if (q.has('talk') || q.has('from') || q.has('launch')) {
+    try { history.replaceState(null, '', location.pathname + (location.hash || '#today')); } catch { /* fine */ }
+  }
+  if (!isConfigured()) return;
+  if (forced || (byYou && lsGet('homebase.talkOnOpen', '0') === '1')) setTimeout(() => openTalk({ auto: true }), 350);
+}
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (talk.on || !hiddenAt || Date.now() - hiddenAt < 10 * 60 * 1000 || lsGet('homebase.talkOnOpen', '0') !== '1' || !isConfigured()) return;
+  // a notification tap reloads the page with ?from=notify instead; give that a moment to happen
+  setTimeout(() => { if (!document.hidden && !talk.on && $('#modal').hidden) openTalk({ auto: true }); }, 700);
+});
+
+// A 🎙 button next to Settings starts talk mode from any tab.
+(function addTalkButton() {
+  const gear = $('#settingsBtn');
+  if (!gear || $('#talkBtn')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'top-acts';
+  gear.replaceWith(wrap);
+  wrap.innerHTML = `<button class="icon-btn" id="talkBtn" aria-label="Talk"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></button>`;
+  wrap.appendChild(gear);
+  $('#talkBtn').onclick = () => openTalk();
+})();
 
 // ================= CHAT =================
 // --- sharing into Homebase (Android Share menu → service worker → here) ---
@@ -1499,7 +1883,7 @@ function paintChat(loading = false) {
   const msgs = state.chat || [];
   list.innerHTML = (msgs.length ? '' : `<div class="empty"><div class="big">Hi! What's on your mind?</div>
       I know your tasks, calendar and the weather. You can also just tell me things you did.</div>`) +
-    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content && 'speechSynthesis' in window ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
+    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
   $$('[data-say]', list).forEach(b => b.onclick = () => speak((state.chat || [])[+b.dataset.say]?.content));
@@ -1791,6 +2175,7 @@ function paintServerSettings() {
     ${voiceCardHtml()}
     <div class="card">
       <h2>Assistant</h2>
+      <label class="field"><span>Assistant's name</span><input type="text" id="sAsstName" maxlength="20" value="${esc(s.assistant_name || 'Bella')}"></label>
       <label class="field"><span>About your household (the AI uses this)</span>
         <textarea id="sAbout" rows="3" placeholder="e.g. One indoor cat. One kid in elementary school. I work from home Mon/Fri, office Tue–Thu. We eat dinner around 6:30 and cook most weeknights.">${esc(s.about_me)}</textarea></label>
       <div class="field"><span>Watch these emails (blank = email reading off)</span>
@@ -1953,11 +2338,12 @@ function paintServerSettings() {
       latitude: $('#sLat').value.trim(), longitude: $('#sLon').value.trim(), units: $('#sUnits').value,
       allergy_months: $$('#sAllergy [data-m].on').map(b => Number(b.dataset.m)),
       brief_hour: $('#sBrief').value, evening_hour: $('#sEve').value, notify_channel: $('#sChan').dataset.value || 'ntfy',
-      about_me: $('#sAbout').value.trim(), email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
+      about_me: $('#sAbout').value.trim(), assistant_name: $('#sAsstName').value.trim() || 'Bella', email_watch_query: buildWatch(watchList, $('#sWatchExtra').value),
       model_main: $('#sModelMain').value.trim() || 'auto', model_smart: $('#sModelSmart').value.trim() || 'auto',
       people: plist.map(p => ({ ...p, name: String(p.name || '').trim() || 'Person' })),
       app_url: location.origin + location.pathname
     });
+    if (state.settings?.assistant_name) lsSet('homebase.assistant', state.settings.assistant_name);
     invalidate(); refreshAll();
     toast('Saved.');
   }).catch(fail);
@@ -1967,3 +2353,4 @@ function paintServerSettings() {
 window.__hbBooted = true;
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 route();
+maybeTalkOnOpen();

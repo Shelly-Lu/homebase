@@ -9,9 +9,24 @@
   "background_color": "#f5f1ea",
   "theme_color": "#f5f1ea",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "share_target": {
     "action": "./share",
@@ -21,10 +36,25 @@
       "title": "title",
       "text": "text",
       "url": "url",
-      "files": [{ "name": "image", "accept": ["image/*"] }]
+      "files": [
+        {
+          "name": "image",
+          "accept": [
+            "image/*"
+          ]
+        }
+      ]
     }
   },
   "shortcuts": [
-    { "name": "Chat", "url": "./#chat" }
+    {
+      "name": "Talk to Bella",
+      "short_name": "Talk",
+      "url": "./?talk=1#today"
+    },
+    {
+      "name": "Chat",
+      "url": "./#chat"
+    }
   ]
 }
