@@ -402,7 +402,7 @@ function paintTasks() {
     : (attention.length ? section('Needs attention', attention) : '') +
       (tomorrow.length ? section('Tomorrow', tomorrow) : '') +
       (!attention.length && !tomorrow.length ? '<div class="empty small">Nothing due today or tomorrow. 🎉</div>' : '') +
-      (week.length ? section('Next 7 days', week) : '') +
+      fold('week', 'Next 7 days', week) +   // folded until you open it (remembered while the app is open)
       (beyond ? `<div class="muted small" style="margin:12px 4px">${beyond} more task${beyond > 1 ? 's' : ''} further out (recurring chores, yearly dates, later to-dos). They're all kept; ask ${esc(assistantName())}, e.g. “what's coming up next month?”</div>` : '') + '<div class="fab-space"></div>');
   $$('details[data-fold]').forEach(d => d.addEventListener('toggle', () => { state.taskFolds[d.dataset.fold] = d.open; }));
   bindTaskTabs();
