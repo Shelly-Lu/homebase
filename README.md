@@ -41,7 +41,7 @@ Gemini's free tier gives each model its own daily request limit. The cheaper **F
 
 - **Automatic model choice.** With the default `auto` setting, the backend asks Google which models your key can use and picks the newest Flash-Lite and Flash. When Google releases or retires models, it adjusts by itself.
 - **Fallback.** If either model hits its limit or is overloaded, the request goes to the other one. If both are out, you get a clear message; reminders, tasks, calendar, and notifications keep working because they don't need AI.
-- **Saving requests.** All new emails in an hourly scan go to the AI in one request (none if nothing is new). Opening the app never calls the AI by itself. What to bring is worked out from the forecast without AI.
+- **Saving requests.** All new emails in an hourly scan go to the AI in one request (none if nothing is new). Opening the app calls the AI only for Bella's short note for the day (once a day per person, again only if your plans or the weather change). The list of what to bring is worked out from the forecast without AI.
 - **Your exact limits** are shown in Google AI Studio for your project. Settings → *AI models & today's usage* in the app shows how many requests Homebase sent today.
 
 **Privacy tradeoff of the free tier:** Google uses free-tier prompts and responses to improve its products, and outside the EEA, Switzerland and the UK human reviewers may read them. That includes your chat, household notes, watched emails, and the meal photos and receipts you ask AI to read (each is sent once, when you tap *Read it*). With a Claude key, Anthropic doesn't use API data for training. If that's a concern, leave email watching off, keep household notes general, or later attach billing to the same key (paid-tier data isn't used that way).
@@ -143,7 +143,8 @@ The voice is chosen per phone in **Settings → Voice (this phone) → Bella's v
 Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar event with reminders the day before and 2 hours before. Anything you add to Google Calendar directly also shows up on Today and in the morning brief.
 
 **What to bring**
-- Home shows it under the weather (after 6 pm, for tomorrow), and the morning brief and evening check-in include it. No AI is involved, so it's instant and free.
+- Home shows it under the weather (after 6 pm, for tomorrow), and the morning brief and evening check-in include it.
+- Above the list, **Bella writes a short, warm note for your day**: the plans that matter (calendar events and tasks due, with times) and what to wear or bring for them, from the weather at those times ("Soccer at 4 and it'll feel like 52° by then, so a warm layer and water for Sam 💛"). It's one small AI request per person per day (plus one for tomorrow in the evening), made again only when your plans or the weather change. Without an AI key, or if it fails, you see the plain list.
 - Jacket by the coolest "feels like" between 7 am and 7 pm (warm coat below 45°F, jacket below 58°F, light jacket or sweater below 66°F; "layers" when the day swings 15°F or more), umbrella when rain is 40%+ at some hour (with the time), boots for snow, sunglasses (and sunscreen) when the UV index is high on a dry day, water on hot days, and **allergy medicine** in the months you pick in Settings → Weather (skipped on rainy days).
 - Ask the chat too: "what should I bring tomorrow?".
 
@@ -201,13 +202,13 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - It needs the child's **birth date** and **sex**: set them in Settings → People, or just tell the chat when it asks. The chart is for keeping track at home; the pediatrician's growth chart is the reference.
 
 **Voice**
-- Tap 🎤 (Home or Chat), speak, and the words appear in the box; check them and tap Send. It uses Chrome's speech recognition (audio goes to Google, like keyboard voice typing), so it works in Chrome, not inside WeChat's browser.
-- When you used the mic, the reply is read aloud by the phone's voice; typed messages stay quiet. 🔊 on any reply reads it again.
+- Tap 🎤 (Home or Chat) to type by voice: the words appear in the box as you speak, and **2.5 seconds after you stop, it sends by itself** (no Send button). Tap 🎤 again to send at once; start typing to edit instead (then you send). It uses Chrome's speech recognition (audio goes to Google, like keyboard voice typing), so it works in Chrome, not inside WeChat's browser.
+- Replies in the chat are shown as text, not read aloud (also after using 🎤). 🔊 on any reply reads it. For a spoken conversation, use talk mode.
 - Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), **Bella's voice** (a natural Chirp voice, see setup step 6, or the phone voice), the **phone voice** used as the backup, and the **speed**, with a ▶ Test button. Each phone keeps its own choice. The assistant replies in the language you use.
 
 **Talk mode (hands-free, e.g. while driving)**
 - Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or just by opening Homebase (*"Hey Google, open Homebase"*): **Settings → Voice → Start talking to Bella when I open Homebase** is on by default (turn it off per phone). Opening Homebase from a notification never starts it; tap **End** to type instead.
-- Bella says *"Hello! I'm here. How can I help?"* and listens. Just talk: **2.5 seconds after you stop**, it sends by itself, reads the answer, and listens again. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
+- Bella says *"Hello, I'm Bella."* and listens. Just talk: **as soon as you finish speaking**, it sends by itself (no waiting), she answers out loud, and listens again. If you pause mid-sentence, the first part may go on its own; just keep talking. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
 - Say **"thanks"** or **"bye"** to finish (also "thank you", "goodbye", 谢谢, 拜拜, 再见). "Thanks, also add eggs" is not goodbye: it's sent. Say **"never mind"** or **"cancel"** to drop what you just said. If you say nothing twice in a row, it closes.
 - Tap the circle while Bella talks to cut her off and speak; tap while you talk to send right away. **End** closes it.
 - The screen stays on while it's open. Replies are kept short and spoken-style; everything also appears in Chat. Charts aren't made in talk mode.
@@ -228,7 +229,7 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 **Email watch**
 In Settings → *Watch these emails*, tap the row to expand the list, then add one sender (an address like `office@school.org` or a whole domain like `school.org`) per row; tap ✕ to remove one. The list is collapsed by default and shows how many senders are watched. Every hour, new matching emails are read and anything with a date or action appears on Today as a suggestion. Nothing is added to your calendar or tasks until you tap.
 
-This list is also the **only** email the chat can see. Ask "anything from the school this week?" and the search runs as *(your watched senders) AND (your question)*; emails outside it can't be found or opened from chat. Leave the list empty to turn all email reading off.
+This list is also the **only** email the chat can see. Ask "anything from the school this week?" and the search runs as *(your watched senders) AND (your question)*; emails outside it can't be found or opened from chat. Leave the list empty to turn all email reading off. (Settings → Assistant → *Let my chat search all my email* widens this to your whole mailbox, read-only; it's **off** by default.)
 
 ---
 
