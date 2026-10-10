@@ -114,6 +114,19 @@ If the chosen channel fails and the other one is set up, Homebase sends through 
 
 Test with **Settings → Send test notification**. If it arrives silently, enable sound for the app in Android **Settings → Notifications**.
 
+### 6. Optional: Bella's natural voice (Google Cloud Chirp)
+
+Without this, Bella reads with the phone's own voice. With it, she uses Google's natural "Chirp 3: HD" voices. **The first 1 million characters each month are free** (a spoken reply is about 150–250 characters, so roughly 4,000+ replies). Homebase counts what it uses and switches to the phone voice at 900,000, so it stays inside the free amount. Google asks for a billing account (a card) even for the free part.
+
+1. Go to **console.cloud.google.com**, pick or create a project, and turn on **Billing** for it (Billing → Link a billing account).
+2. **APIs & Services → Library**, search **Cloud Text-to-Speech API**, tap **Enable**.
+3. **APIs & Services → Credentials → Create credentials → API key**. Copy it. (Optional but good: *Edit API key → API restrictions → Restrict key → Cloud Text-to-Speech API*.)
+4. Safety net: **Billing → Budgets & alerts → Create budget**, amount **$1**, so Google emails you if anything is ever charged.
+5. In Apps Script → **Project Settings → Script Properties**, add `TTS_API_KEY` = that key.
+6. Run **`testVoice`** in the editor. It should say "Natural voice works".
+
+The voice is chosen per phone in **Settings → Voice (this phone) → Bella's voice** (Aoede is the default; ▶ Test plays a sample). The usage line there shows how much of this month's free amount is used. To change the free-amount guard, add the setting `voice_monthly_cap` in the Settings tab of the Sheet (a number of characters; 1,000,000 is the free limit).
+
 ---
 
 ## Using it
@@ -188,7 +201,16 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 **Voice**
 - Tap 🎤 (Home or Chat), speak, and the words appear in the box; check them and tap Send. It uses Chrome's speech recognition (audio goes to Google, like keyboard voice typing), so it works in Chrome, not inside WeChat's browser.
 - When you used the mic, the reply is read aloud by the phone's voice; typed messages stay quiet. 🔊 on any reply reads it again.
-- Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), the **reading voice**, and the **speed**, with a ▶ Test button. Voices marked “online” sound most natural; “Automatic” picks an online one when the phone has it. More voices: Android Settings → Text-to-speech → Google → install voice data. Each phone keeps its own choice. The assistant replies in the language you use.
+- Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), **Bella's voice** (a natural Chirp voice, see setup step 6, or the phone voice), the **phone voice** used as the backup, and the **speed**, with a ▶ Test button. Each phone keeps its own choice. The assistant replies in the language you use.
+
+**Talk mode (hands-free, e.g. while driving)**
+- Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or by voice: turn on **Settings → Voice → Start talking to Bella when I open Homebase**, then say *"Hey Google, open Homebase"*. Opening Homebase from a notification never starts it.
+- Bella says *"I'm here. How can I help?"* and listens. Just talk: **2.5 seconds after you stop**, it sends by itself, reads the answer, and listens again. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
+- Say **"thanks"** or **"bye"** to finish (also "thank you", "goodbye", 谢谢, 拜拜, 再见). "Thanks, also add eggs" is not goodbye: it's sent. Say **"never mind"** or **"cancel"** to drop what you just said. If you say nothing twice in a row, it closes.
+- Tap the circle while Bella talks to cut her off and speak; tap while you talk to send right away. **End** closes it.
+- The screen stays on while it's open. Replies are kept short and spoken-style; everything also appears in Chat. Charts aren't made in talk mode.
+- Limits of a web app: it can't listen in the background or with the screen off, and it doesn't appear in Android Auto. Chrome may beep each time it starts listening again. If the phone wants a tap before Homebase may speak (some phones, the first time), it shows **Tap to start**.
+- The name: owner's **Settings → Assistant → Assistant's name** (default Bella).
 - Settings sections are folded; tap a heading to open it. The app remembers which ones you left open.
 
 **Family (shared Homebase with sign-in)**
@@ -234,4 +256,7 @@ This list is also the **only** email the chat can see. Ask "anything from the sc
 | Weather says location not set | Settings → Use my location → Save settings. |
 | No notifications | Check the ntfy topic matches, then use Send test notification. Allow ntfy to run in background (Android battery settings). |
 | "Drive permission missing" | Re-paste `appsscript.json`, run `authorizeDrive` in the editor, approve, then Deploy → New version. |
+| Bella uses the phone voice, not the natural one | Settings → Voice shows why. Usually: `TTS_API_KEY` missing, the Cloud Text-to-Speech API not enabled, or billing not turned on for that Google Cloud project. Run `testVoice`. Also once this month's free amount is used up. |
+| Talk mode doesn't start with "Hey Google, open Homebase" | Turn on Settings → Voice → *Start talking to Bella when I open Homebase* (it's per phone). If Homebase was already open in the background, it starts when you come back after 10+ minutes; otherwise tap 🎙. |
+| Talk mode stops listening | It pauses when the screen turns off or you switch apps, and picks up when you come back. "Allow the microphone…": Chrome → ⋮ → Settings → Site settings → Microphone → allow your Homebase address. |
 | Errors in general | Apps Script → **Executions** shows each run and its error. |
