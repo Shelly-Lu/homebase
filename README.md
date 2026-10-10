@@ -135,7 +135,9 @@ The voice is chosen per phone in **Settings → Voice (this phone) → Bella's v
 - Easiest: just tell the chat (or the box on Today): *"I clipped the cat's claws today."* It matches an existing task or creates one with an AI-chosen interval and tells you when it will remind you.
 - Or tap **+** on Tasks. **Let AI decide** picks the interval; **Every…** sets a fixed one; **One-time** is a to-do with a due date.
 - After two or three completions, AI-chosen intervals switch to your actual rhythm (shown as *learned*). Fixed intervals never change.
-- For kids' and pets' health, the doctor's or vet's schedule wins over AI defaults. Put real appointments on the calendar.
+- For kids' and pets' health, the doctor's or vet's schedule wins over AI defaults.
+- **Timed reminders:** any task can have its own reminder time. Say it to the chat ("remind me at 2pm to call the school", "dentist Friday 3pm, remind me 2 hours before", "remind me the night before at 8") or set **Reminder** in the task form (a time, and *same day / day before / 2 days before / week before*). At that time you get a Telegram or ntfy notification (whichever you use). Recurring tasks remind on each due day. Tasks without a reminder time still appear in the morning brief and evening check-in. Reminders go to the person who added the task. A check runs every 5 minutes, so a reminder can arrive up to 5 minutes after its time.
+- **Email appointments** you accept on Home become tasks (with the time in the name, e.g. "Dental cleaning at 3pm"), not calendar events. Open the task to add a reminder time. The chat only adds calendar events when you ask for the calendar.
 
 **Appointments**
 Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar event with reminders the day before and 2 hours before. Anything you add to Google Calendar directly also shows up on Today and in the morning brief.
@@ -146,16 +148,16 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - Ask the chat too: "what should I bring tomorrow?".
 
 **Food log**
-- Open **Food** and tap **+**. Take or choose a **food photo** and, if you have one, the **receipt**. Add a note if you like ("shared with Drey") and who ate. Tap **Read it**: AI fills in the dish, meal (breakfast, lunch, dinner, snack, dessert, drink), homemade / restaurant / takeout / packaged, the place and date from the receipt, cuisine, ingredients, tags (sweet, spicy, light…), rough calories and protein, and the price. Check it and **Save**. *Fill in by hand* skips the AI.
+- Open **Food** and tap **+**. Take or choose a **food photo** and, if you have one, the **receipt**. Add a note if you like ("shared with Sam") and who ate. Tap **Read it**: AI fills in the dish, meal (breakfast, lunch, dinner, snack, dessert, drink), homemade / restaurant / takeout / packaged, the place and date from the receipt, cuisine, ingredients, tags (sweet, spicy, light…), rough calories and protein, and the price. Check it and **Save**. *Fill in by hand* skips the AI.
 - Tap any meal to edit it, rate it (😋 loved it / 🙂 fine / 😕 not again; ratings steer the ideas) or delete it.
-- Or just tell the chat or the Home box: "had pho at Pho 75 for lunch", "Drey had pancakes". It logs it to the food log with an estimate (Undo on Home), also when you say "log" or "record" (meals never go to the Journal). Each night (11:30 pm), meals you only mentioned in passing in that day's chat are added too, marked *picked up from chat*.
+- Or just tell the chat or the Home box: "had pho at Pho 75 for lunch", "Sam had pancakes". It logs it to the food log with an estimate (Undo on Home), also when you say "log" or "record" (meals never go to the Journal). Each night (11:30 pm), meals you only mentioned in passing in that day's chat are added too, marked *picked up from chat*.
 - The log is **shared** by the household: everyone can see and add meals; only the person who logged a meal (or you) can delete it. It lives in the spreadsheet's **Meals** tab; rows typed there work too (a name is enough; lists are comma-separated, people by name).
 - Photos are shrunk on the phone (meal 800 px, receipt 1600 px so it stays readable) and kept in a private **Homebase photos** folder in your Drive (an older install keeps using its existing photo folder).
 - Calories are rough AI estimates, good for spotting patterns, not for exact counting.
 
 **Taste quiz (a head start before the log fills up)**
 - Food → **Take the taste quiz**. First a quick setup: whose taste, **which cuisines** you eat (American, Chinese, Italian, Japanese, Mexican, Thai, Vietnamese…; none picked = all) and **spice** (not spicy / a little / love spicy). Then rate **30 dish photos**: 😍 *Love it*, 🙂 *It's OK*, 🙅 *Not for me* (or swipe right / left). At the end, *Rate 20 more* if you like. Answers save as you go.
-- For a child (like Drey), kid-friendly dishes come first (pasta, pancakes, chicken, noodles, desserts…), and offal or very spicy dishes are skipped; spice defaults to *not spicy*.
+- For a child (like Sam), kid-friendly dishes come first (pasta, pancakes, chicken, noodles, desserts…), and offal or very spicy dishes are skipped; spice defaults to *not spicy*.
 - The setup is remembered per person and goes to the food ideas too. Answers are in the spreadsheet's **Taste** tab.
 - Dishes and photos come from [TheMealDB](https://www.themealdb.com), a free, crowd-sourced dish database; Homebase uses its free key, meant for development and personal projects (credited in the quiz). The dish list is fetched once (about 10 seconds) and kept for 30 days.
 
@@ -175,7 +177,7 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - A shared link is read only if the page is public; pages behind a login can't be read, so share the selected text instead. Pictures are sent to Gemini once to be read and are not stored; the shared text is kept in the chat history so follow-ups work. Shared content is treated as data: instructions written inside it are ignored.
 
 **Home: log anything in one line**
-- The app opens on **Home**. Type (or tap 🎤 and say) what happened: "clipped the cat's claws", "Drey wore the blue hoodie and jeans", "dentist Oct 20 at 3", "laundry done". 📎 adds a photo or screenshot.
+- The app opens on **Home**. Type (or tap 🎤 and say) what happened: "clipped the cat's claws", "Sam wore the blue hoodie and jeans", "dentist Oct 20 at 3", "laundry done". 📎 adds a photo or screenshot.
 - If it was saved and the assistant has no question, a short confirmation appears right there (for about 8 seconds) with **Undo** (works for an hour for done tasks, new tasks, new events, meals and journal notes) and **Open in chat**. Questions, food ideas and anything the assistant needs to ask about open the **Chat** tab. Everything is kept in your chat history either way.
 
 **Tasks: only what's coming up**
@@ -184,8 +186,8 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - You can add many tasks at once straight in the spreadsheet's **Tasks** tab: fill in `name`, and optionally `next_due` (e.g. 12/15/2026), `interval_days` with `last_done` for repeating ones, `notes`, `category`. Leave `id` blank; Homebase fills in the rest the next time it loads.
 
 **Log: remember anything, look it up later**
-- Tell Homebase anything worth remembering, on Home or in Chat: "Drey had a fever of 101 last night, gave Tylenol at 7", "oil change at 45,000 miles, $89", "spare key is in the blue drawer". It's saved to the **Journal** tab of your spreadsheet (shared with the family unless you say "just for me"), and the Home confirmation has Undo.
-- Ask about the past: "when was the last oil change?", "how many times did Drey have a fever this year?", "what did the vet say?". The assistant searches the Journal, finished tasks (with their notes), meals, measurements, and your own earlier chat messages, and answers with dates.
+- Tell Homebase anything worth remembering, on Home or in Chat: "Sam had a fever of 101 last night, gave Tylenol at 7", "oil change at 45,000 miles, $89", "spare key is in the blue drawer". It's saved to the **Journal** tab of your spreadsheet (shared with the family unless you say "just for me"), and the Home confirmation has Undo.
+- Ask about the past: "when was the last oil change?", "how many times did Sam have a fever this year?", "what did the vet say?". The assistant searches the Journal, finished tasks (with their notes), meals, measurements, and your own earlier chat messages, and answers with dates.
 - Everything is kept in the spreadsheet's **Journal** tab (not shown in the app). You can also type rows there; Homebase reads them too.
 - **Every night (11:30 pm)** Homebase also reads that day's conversations and saves anything worth remembering that you didn't explicitly log (what the doctor said, a price, a decision), plus a one-line day summary. These automatic records are marked `auto` and are private to the person who had the conversation.
 
@@ -194,8 +196,8 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - It only plots real numbers it found (or that you give it); if there's not enough data it answers in words.
 
 **Growth charts**
-- Log measurements by just saying them: "Drey is 4 ft 2 in and 56 lb", "Drey 128 cm, 25.4 kg at the checkup". They're saved in the **Measurements** tab (Undo works on Home). Older measurements can be typed straight into that tab: `date`, `person` (name), `metric` (`height` or `weight`), `value`, `unit` (cm, in, kg or lb).
-- Ask "show Drey's growth curve" (or weight, or BMI). The chart shows Drey's measurements over the **CDC percentile curves** (5th–95th, ages 2–20) and the latest percentile, in inches/pounds or cm/kg to match your units setting.
+- Log measurements by just saying them: "Sam is 4 ft 2 in and 56 lb", "Sam 128 cm, 25.4 kg at the checkup". They're saved in the **Measurements** tab (Undo works on Home). Older measurements can be typed straight into that tab: `date`, `person` (name), `metric` (`height` or `weight`), `value`, `unit` (cm, in, kg or lb).
+- Ask "show Sam's growth curve" (or weight, or BMI). The chart shows Sam's measurements over the **CDC percentile curves** (5th–95th, ages 2–20) and the latest percentile, in inches/pounds or cm/kg to match your units setting.
 - It needs the child's **birth date** and **sex**: set them in Settings → People, or just tell the chat when it asks. The chart is for keeping track at home; the pediatrician's growth chart is the reference.
 
 **Voice**
@@ -204,8 +206,8 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), **Bella's voice** (a natural Chirp voice, see setup step 6, or the phone voice), the **phone voice** used as the backup, and the **speed**, with a ▶ Test button. Each phone keeps its own choice. The assistant replies in the language you use.
 
 **Talk mode (hands-free, e.g. while driving)**
-- Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or by voice: turn on **Settings → Voice → Start talking to Bella when I open Homebase**, then say *"Hey Google, open Homebase"*. Opening Homebase from a notification never starts it.
-- Bella says *"I'm here. How can I help?"* and listens. Just talk: **2.5 seconds after you stop**, it sends by itself, reads the answer, and listens again. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
+- Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or just by opening Homebase (*"Hey Google, open Homebase"*): **Settings → Voice → Start talking to Bella when I open Homebase** is on by default (turn it off per phone). Opening Homebase from a notification never starts it; tap **End** to type instead.
+- Bella says *"Hello! I'm here. How can I help?"* and listens. Just talk: **2.5 seconds after you stop**, it sends by itself, reads the answer, and listens again. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
 - Say **"thanks"** or **"bye"** to finish (also "thank you", "goodbye", 谢谢, 拜拜, 再见). "Thanks, also add eggs" is not goodbye: it's sent. Say **"never mind"** or **"cancel"** to drop what you just said. If you say nothing twice in a row, it closes.
 - Tap the circle while Bella talks to cut her off and speak; tap while you talk to send right away. **End** closes it.
 - The screen stays on while it's open. Replies are kept short and spoken-style; everything also appears in Chat. Charts aren't made in talk mode.
@@ -229,6 +231,39 @@ In Settings → *Watch these emails*, tap the row to expand the list, then add o
 This list is also the **only** email the chat can see. Ask "anything from the school this week?" and the search runs as *(your watched senders) AND (your question)*; emails outside it can't be found or opened from chat. Leave the list empty to turn all email reading off.
 
 ---
+
+**Groceries**
+- Food → **Groceries → Plan meals & list**: choose how many meals you're shopping for (3, 4, 5, 7 or 10) and anything special (quick & easy, healthy, kid-friendly, budget…). Bella suggests that many home-cooked meals from your taste and recent eating, with variety and shared ingredients so less goes to waste. Open 📖 for a recipe, ↻ to swap one, ✕ to drop it.
+- **Make shopping list** adds up the ingredients of all the meals into one list by store section (produce, meat & seafood, dairy & eggs…), showing which meal needs what. The meals also go under **Up next**.
+- Tap anything you already have to scratch it, and tick things off the same way in the store. Add extra items at the top. **Copy list** gives plain text to paste into a message. The list is shared with the family.
+- A task like "Grocery shopping" or "Costco run" gets a **🛒 Plan** button. In the chat, say you're going shopping and Bella asks how many meals; you can also say "add milk to the grocery list" or ask "what's on the list?", including in talk mode.
+
+**Bella's personality and who's talking**
+- Bella acts as the family's caring house manager: warm and friendly, practical first, with kind nudges (a jacket, water, rest) and no nagging.
+- She knows who is using each phone from its sign-in. On a shared phone, say **"This is <name>"** (or "It's <name>", "我是<name>") in chat or talk mode: Bella talks with that person and logs things for them for the next 30 minutes. With a child she uses simple, gentle words, tells them to get a grown-up for anything worrying, and email and deleting are off. (Chrome can't recognise *voices*, so saying the name is how she knows.) The conversation is still saved in the phone owner's chat.
+
+**Dates you can trust**
+- Bella gets a calendar with every weekday around today, so she never works out weekdays herself. She can also pass your own words ("yesterday", "next Tue", "Oct 20", "明天") and Homebase converts them the same way every time.
+- Before anything is saved, its date is checked against what you actually said (or the email or flyer it came from). A mismatch, such as "yesterday" saved as today, or "Friday" saved as Saturday, is blocked: nothing is saved, and Bella fixes it or asks you. Things that already happened can't get a future date.
+- Dates in her replies are checked too: "Friday, Oct 17" when Oct 17 is a Saturday gets corrected before you see it. What changed shows the weekday ("Added task … (Fri 2026-10-16)") so a wrong day is easy to spot and undo.
+- Every record keeps the time it was saved ("logged at"). Bella doesn't mention it unless you ask, e.g. "what time did I log the fever?".
+
+**Nightly brief and Bella's memory**
+- At 11:30pm Bella reads **all** of the day's conversation (in parts, however long it was) and saves to the Journal: facts and events, meals, **open items** (things still to do or follow up, like "ask the school about Friday pickup"), and **important yearly dates**. A fact whose date is unclear is still saved, on that day, marked "(date unsure)".
+- Then she posts **"Here's your day"** in your chat: what you talked about, what got done, new tasks, what was eaten, **every note she saved** (so you can spot anything missing and just tell her), open items, new yearly reminders, what's still due and what's coming tomorrow. On a day you didn't use Homebase, nothing is posted.
+- The app's chat starts fresh from that message. **Nothing is ever deleted:** chat older than 30 days moves to the **ChatArchive** tab (a new ChatArchive2… tab every 200,000 rows), and "Clear chat history" only clears the app's view.
+- Asking about the past searches in layers: last night's brief and recent notes → the Journal, meals, tasks and measurements → the last 30 days of chat → the archive (when nothing else answers it fully). If the answer comes from an old conversation, Bella tells you when it was said.
+- If the nightly job runs out of time (Apps Script allows 6 minutes per run), it carries on a minute later where it stopped.
+- When you type in the chat, replies are shown, not read aloud. Only the mic and talk mode read replies.
+
+**Important dates and birthdays**
+- Mention an anniversary, birthday, renewal or any date that comes every year ("our anniversary is Nov 3"), and Bella creates a yearly reminder right away: **a week before (9am) and on the day (8am)**. The nightly memory catches ones she missed. New ones are listed in the nightly brief; say "that's wrong" or tap Undo to change them.
+- Everyone with a birth date in **Settings → People** gets a yearly birthday reminder, sent to the grown-ups (not to the child, and not to the birthday person).
+- The morning brief adds **"Coming up"** for yearly dates in the next 7 days. A yearly date that passes without being ticked off simply moves on to next year.
+
+**Tasks: what the app shows**
+- The Tasks tab shows only **overdue and today, tomorrow, and the next 7 days** (recurring chores and yearly dates too, when they come due). Everything further out is kept in the Sheet's Tasks tab, and Bella sees the whole list: ask "what's coming up next month?" or "when is the furnace filter due?".
+- Before adding a task, Bella checks for one that's already there (the same thing worded differently) and updates it instead. Adding one by hand that looks like an existing task asks "Add another one anyway?". Accepting an email suggestion that's already a task doesn't add it twice.
 
 ## Notes and limits
 
@@ -259,4 +294,5 @@ This list is also the **only** email the chat can see. Ask "anything from the sc
 | Bella uses the phone voice, not the natural one | Settings → Voice shows why. Usually: `TTS_API_KEY` missing, the Cloud Text-to-Speech API not enabled, or billing not turned on for that Google Cloud project. Run `testVoice`. Also once this month's free amount is used up. |
 | Talk mode doesn't start with "Hey Google, open Homebase" | Turn on Settings → Voice → *Start talking to Bella when I open Homebase* (it's per phone). If Homebase was already open in the background, it starts when you come back after 10+ minutes; otherwise tap 🎙. |
 | Talk mode stops listening | It pauses when the screen turns off or you switch apps, and picks up when you come back. "Allow the microphone…": Chrome → ⋮ → Settings → Site settings → Microphone → allow your Homebase address. |
+| Timed reminders don't arrive | In Apps Script → **Triggers** (clock icon), there should be a `taskReminders` trigger every 5 minutes. If it's missing, run `setup` once. Then check Settings → Send test notification. |
 | Errors in general | Apps Script → **Executions** shows each run and its error. |

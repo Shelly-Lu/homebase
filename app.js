@@ -6,6 +6,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const view = $('#view');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// line icons (same style as the Bella 🎙 button at the top)
+const ICON_MIC = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>';
+const ICON_CLIP = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>';
 const CHECK = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>';
 
 let toastTimer;
@@ -90,7 +93,7 @@ const FRESH_MS = 60 * 1000;
 const cached = loadSaved(CACHE_KEY) || {};
 const state = {
   today: cached.today || loadSaved('homebase.today'),
-  tasks: cached.tasks || null, meals: cached.meals || null, taste: cached.taste || null, journal: cached.journal || null,
+  tasks: cached.tasks || null, meals: cached.meals || null, taste: cached.taste || null, grocery: cached.grocery || null, journal: cached.journal || null,
   chat: cached.chat || null, settings: null, fetchedAt: {},
   me: cached.me || null          // {id, name, role: 'owner'|'member', person_id}
 };
@@ -128,7 +131,7 @@ let saveTimer = null;
 function saveCache() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, meals: (state.meals || []).slice(0, 150), taste: state.taste, journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, today: state.today, tasks: state.tasks, meals: (state.meals || []).slice(0, 150), taste: state.taste, grocery: state.grocery, journal: state.journal, chat: (state.chat || []).filter(m => !m.typing).slice(-30) })); }
     catch { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
   }, 250);
 }
@@ -172,6 +175,7 @@ function refreshAll() {
     if (b.tasks) state.tasks = b.tasks;
     if (b.meals) state.meals = b.meals;
     if (b.taste) state.taste = b.taste;
+    if (b.grocery) state.grocery = b.grocery;
     const now = Date.now();
     ['today', 'tasks', 'meals'].forEach(k => { state.fetchedAt[k] = now; });
     saveCache();
@@ -283,7 +287,7 @@ function suggestionsCard(list) {
       <div class="muted small">${s.date ? esc(niceDate(s.date)) + (s.time ? ' · ' + time12(s.time) : '') + ' · ' : ''}${esc(s.details || '')}
         ${s.link ? ` · <a href="${esc(s.link)}" target="_blank" rel="noopener">open email</a>` : ''}</div>
       <div class="btn-row" style="margin-top:8px">
-        <button class="btn small primary" data-act="accept">${s.type === 'appointment' && s.date ? 'Add to calendar' : s.type === 'info' ? 'Got it' : 'Add as to-do'}</button>
+        <button class="btn small primary" data-act="accept">${s.type === 'info' ? 'Got it' : 'Add to Tasks'}</button>
         <button class="btn small ghost" data-act="dismiss">Dismiss</button>
       </div>
     </div>`).join('')}</div>`;
@@ -293,11 +297,12 @@ function bindSuggestions() {
     el.addEventListener('click', e => {
       const b = e.target.closest('button'); if (!b) return;
       busy(b, async () => {
-        await api(b.dataset.act === 'accept' ? 'suggestions.accept' : 'suggestions.dismiss', { id: el.dataset.id });
+        const res = await api(b.dataset.act === 'accept' ? 'suggestions.accept' : 'suggestions.dismiss', { id: el.dataset.id });
         el.remove();
         state.today.suggestions = state.today.suggestions.filter(s => s.id !== el.dataset.id);
         if (!state.today.suggestions.length) $('#sugCard')?.remove();
-        toast(b.dataset.act === 'accept' ? 'Added.' : 'Dismissed.');
+        toast(b.dataset.act === 'accept' ? (res?.already ? `Already on your list: ${res.name}.` : 'Added to Tasks. Open it there to set a reminder time.') : 'Dismissed.');
+        if (b.dataset.act === 'accept') invalidate();
       }).catch(fail);
     });
   });
@@ -324,15 +329,24 @@ function dueLabel(t) {
   return `<span class="badge later">${esc(rel(t.next_due))}</span>`;
 }
 function freqText(t) {
+  if (t.yearly_md) return 'every year · ' + niceDate(t.next_due);
   if (!t.interval_days) return t.next_due ? 'one-time · due ' + niceDate(t.next_due) : 'one-time';
   const base = `every ${t.interval_days} day${t.interval_days > 1 ? 's' : ''}`;
   const mode = t.interval_mode === 'ai' ? ' · AI guess' : t.interval_mode === 'learned' ? ' · learned' : '';
   return base + mode + (t.last_done ? ` · last ${rel(t.last_done)}` : '');
 }
+// "⏰ 1pm" or "⏰ 8pm, day before"
+function remindText(t) {
+  if (!t.remind_time) return '';
+  const n = Number(t.remind_days_before) || 0;
+  const more = String(t.remind_extra || '').split(',').filter(Boolean).length;
+  return '⏰ ' + time12(t.remind_time) + (n === 1 ? ', day before' : n === 7 ? ', a week before' : n > 1 ? `, ${n} days before` : '') + (more ? ` + ${more} more` : '');
+}
 function taskRow(t) {
   return `<div class="list-row" data-task="${t.id}">
     <button class="check" data-done="${t.id}" aria-label="Mark done">${CHECK}</button>
-    <div class="grow tap" data-edit="${t.id}"><div class="title">${t.private ? '<span class="lock" title="Only you can see this">🔒</span> ' : ''}${esc(t.name)}</div><div class="meta">${esc(freqText(t))}</div></div>
+    <div class="grow tap" data-edit="${t.id}"><div class="title">${t.private ? '<span class="lock" title="Only you can see this">🔒</span> ' : ''}${esc(t.name)}</div><div class="meta">${esc(freqText(t))}${t.remind_time ? ` · <span class="remind-tag">${esc(remindText(t))}</span>` : ''}</div></div>
+    ${GROCERY_TASK_RE.test(t.name) ? `<button type="button" class="btn small groc-task" data-groc="1" aria-label="Plan meals and shopping list">🛒 Plan</button>` : ''}
     ${dueLabel(t)}
   </div>`;
 }
@@ -346,6 +360,7 @@ function bindTaskRows(root, after) {
       after?.();
     } catch (e) { b.classList.remove('done'); b.disabled = false; fail(e); }
   }));
+  $$('[data-groc]', root).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); state.grocery?.total ? openGroceryList() : openGroceryPlanner(); }));
   $$('[data-edit]', root).forEach(el => el.addEventListener('click', async () => {
     let t = (state.tasks || []).find(x => x.id === el.dataset.edit) || (state.today?.tasks_due || []).find(x => x.id === el.dataset.edit);
     openTaskEditor(t, after);
@@ -371,14 +386,12 @@ function paintTasks() {
   if (state.taskView === 'log') return paintLog();
   saveCache();
   const all = state.tasks || [];
-  // Shown: overdue, today and tomorrow. Folded: the rest of this week and next. Further out stays in the spreadsheet.
-  // Recurring chores only show up when they're due; otherwise they wait, folded, at the end.
-  const recurring = all.filter(t => t.interval_days && (t.days_until === null || t.days_until > 0));
-  const oneTime = all.filter(t => !recurring.includes(t));
-  const by = (lo, hi) => oneTime.filter(t => t.days_until !== null && t.days_until >= lo && t.days_until <= hi);
-  const attention = oneTime.filter(t => t.days_until !== null && t.days_until <= 0);
-  const tomorrow = by(1, 1), week = by(2, 7), twoWeeks = by(8, 14);
-  const beyond = oneTime.filter(t => t.days_until === null || t.days_until > 14).length;
+  // The app shows only what's close: overdue and today, tomorrow, and the next 7 days (recurring ones too, when they
+  // come due). Everything further out stays in the backend: Bella knows it all ("what's coming up next month?").
+  const by = (lo, hi) => all.filter(t => t.days_until !== null && t.days_until >= lo && t.days_until <= hi);
+  const attention = all.filter(t => t.days_until !== null && t.days_until <= 0);
+  const tomorrow = by(1, 1), week = by(2, 7);
+  const beyond = all.filter(t => t.days_until === null || t.days_until > 7).length;
   state.taskFolds = state.taskFolds || {};
   const section = (name, list) => `<div class="section-title">${name}<span>${list.length}</span></div><div class="card">${list.map(taskRow).join('')}</div>`;
   const fold = (key, name, list) => list.length ? `<details class="later" data-fold="${key}" ${state.taskFolds[key] ? 'open' : ''}>
@@ -389,9 +402,8 @@ function paintTasks() {
     : (attention.length ? section('Needs attention', attention) : '') +
       (tomorrow.length ? section('Tomorrow', tomorrow) : '') +
       (!attention.length && !tomorrow.length ? '<div class="empty small">Nothing due today or tomorrow. 🎉</div>' : '') +
-      fold('week', 'Next 7 days', week) + fold('two', 'Next 14 days', twoWeeks) +
-      (beyond ? `<div class="muted small" style="margin:12px 4px">+${beyond} more after that, in the spreadsheet's Tasks tab. Ask Homebase anytime, e.g. “what's due next month?”</div>` : '') +
-      fold('rec', 'Recurring', recurring));
+      (week.length ? section('Next 7 days', week) : '') +
+      (beyond ? `<div class="muted small" style="margin:12px 4px">${beyond} more task${beyond > 1 ? 's' : ''} further out (recurring chores, yearly dates, later to-dos). They're all kept; ask ${esc(assistantName())}, e.g. “what's coming up next month?”</div>` : '') + '<div class="fab-space"></div>');
   $$('details[data-fold]').forEach(d => d.addEventListener('toggle', () => { state.taskFolds[d.dataset.fold] = d.open; }));
   bindTaskTabs();
   bindTaskRows(view, () => renderTasks());
@@ -420,7 +432,7 @@ function paintLog(keepSearch) {
   const html = `${taskTabsHtml()}
     <label class="field log-search"><input type="search" id="logQ" placeholder="Search the log… (fever, oil change, 身高)" value="${esc(state.logQuery)}" autocomplete="off"></label>
     ${!list ? '<div class="card"><div class="skeleton" style="height:160px"></div></div>'
-      : !list.length ? `<div class="empty"><div class="big">Nothing logged yet</div>Tell Homebase what happened, on Home or in Chat:<br>“Drey had a fever of 101 last night”, “oil change at 45,000 miles, $89”.<br>Ask later: “when was the last oil change?”</div>`
+      : !list.length ? `<div class="empty"><div class="big">Nothing logged yet</div>Tell Homebase what happened, on Home or in Chat:<br>“Sam had a fever of 101 last night”, “oil change at 45,000 miles, $89”.<br>Ask later: “when was the last oil change?”</div>`
       : !shown.length ? '<div class="empty small">No records match. Try fewer words, or ask the chat.</div>'
       : groupByMonth(shown).map(([month, rows]) => `<div class="section-title">${esc(month)}<span>${rows.length}</span></div>
           <div class="card">${rows.map(logRow).join('')}</div>`).join('')}`;
@@ -454,12 +466,12 @@ function openLogEditor(r) {
   const mine = (r.user || 'owner') === (state.me?.id || 'owner');
   const canDelete = !isNew && (mine || !isMember());
   openModal(`<h3>${isNew ? 'Log something' : 'Record'}</h3>
-    <label class="field"><span>What happened</span><textarea id="lgText" rows="3" placeholder="e.g. Drey's height 128 cm at the checkup">${esc(r.text)}</textarea></label>
+    <label class="field"><span>What happened</span><textarea id="lgText" rows="3" placeholder="e.g. Sam's height 128 cm at the checkup">${esc(r.text)}</textarea></label>
     <div class="two">
       <label class="field"><span>Date</span><input type="date" id="lgDate" value="${esc(r.date)}"></label>
       <label class="field"><span>Category</span><input type="text" id="lgCat" list="lgCats" value="${esc(r.category || '')}"><datalist id="lgCats">${LOG_CATS.map(c => `<option>${c}</option>`).join('')}</datalist></label>
     </div>
-    <label class="field"><span>About (optional)</span><input type="text" id="lgPeople" value="${esc(r.people || '')}" placeholder="e.g. Drey"></label>
+    <label class="field"><span>About (optional)</span><input type="text" id="lgPeople" value="${esc(r.people || '')}" placeholder="e.g. Sam"></label>
     ${mine ? `<label class="field check-field row-field"><input type="checkbox" id="lgPrivate" ${r.private ? 'checked' : ''}><span>Only me <span class="muted small">(hidden from the rest of the family)</span></span></label>` : ''}
     <div class="btn-row"><button class="btn primary" id="lgSave">Save</button>${canDelete ? '<button class="btn danger" id="lgDel">Delete</button>' : ''}</div>`);
   if (isNew) setTimeout(() => $('#lgText')?.focus(), 50);
@@ -513,6 +525,15 @@ function openTaskEditor(t, after) {
       <label class="field" id="tLastF"><span>Last done</span><input type="date" id="tLast" value="${esc(t.last_done || '')}"></label>
       <label class="field" id="tDueF"><span>Due date</span><input type="date" id="tDue" value="${esc(t.next_due || '')}"></label>
     </div>
+    <div class="field"><span>Reminder</span>
+      <div class="remind-row">
+        <input type="time" id="tRemind" value="${esc(t.remind_time || '')}" aria-label="Reminder time">
+        <select id="tRemindDay" aria-label="Which day">${[[0, 'same day'], [1, 'day before'], [2, '2 days before'], [7, 'week before']]
+          .concat([0, 1, 2, 7].includes(Number(t.remind_days_before) || 0) ? [] : [[Number(t.remind_days_before), t.remind_days_before + ' days before']])
+          .map(([v, l]) => `<option value="${v}" ${(Number(t.remind_days_before) || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <button type="button" class="btn small ghost" id="tRemindClear">None</button>
+      </div>
+      <span class="muted small" id="tRemindInfo" style="display:block;margin-top:5px"></span></div>
     <label class="field"><span>Category</span><input type="text" id="tCat" list="catList" value="${esc(t.category || '')}" placeholder="pets, home, kids…">
       <datalist id="catList"><option>pets</option><option>home</option><option>kids</option><option>health</option><option>car</option><option>garden</option><option>personal</option></datalist></label>
     <label class="field"><span>Notes</span><textarea id="tNotes" rows="2">${esc(t.notes || '')}</textarea></label>
@@ -533,6 +554,18 @@ function openTaskEditor(t, after) {
   };
   $$('#tRepeat button').forEach(b => b.onclick = () => { repeat = b.dataset.v; paint(); });
   paint();
+  const paintRemind = () => {
+    const on = !!$('#tRemind').value;
+    $('#tRemindDay').disabled = !on;
+    $('#tRemindInfo').textContent = on
+      ? `A ${state.settings?.notify_channel === 'ntfy' ? 'ntfy' : 'Telegram'} notification at ${time12($('#tRemind').value)}${Number($('#tRemindDay').value) ? ', ' + $('#tRemindDay').selectedOptions[0].text : ' on the due day'}${repeat !== 'once' ? ', each time it comes due' : ''}.`
+      : 'No timed reminder. It still shows in the morning brief and evening check-in.';
+  };
+  $('#tRemind').addEventListener('input', paintRemind); $('#tRemind').addEventListener('change', paintRemind);
+  $('#tRemindDay').addEventListener('change', paintRemind);
+  $('#tRemindClear').onclick = () => { $('#tRemind').value = ''; paintRemind(); };
+  $$('#tRepeat button').forEach(b => b.addEventListener('click', paintRemind));
+  paintRemind();
   if (isNew) setTimeout(() => $('#tName')?.focus(), 50);
 
   if (!isNew) api('tasks.history', { id: t.id, limit: 10 }).then(h => {
@@ -542,7 +575,8 @@ function openTaskEditor(t, after) {
   $('#tSave').onclick = e => {
     const name = $('#tName').value.trim();
     if (!name) return toast('Give it a name.', true);
-    const data = { name, category: $('#tCat').value.trim(), notes: $('#tNotes').value.trim() };
+    const data = { name, category: $('#tCat').value.trim(), notes: $('#tNotes').value.trim(),
+      remind_time: $('#tRemind').value || '', remind_days_before: $('#tRemind').value ? Number($('#tRemindDay').value) || 0 : 0 };
     if (!isNew) data.id = t.id;
     if ($('#tPrivate')) data.private = $('#tPrivate').checked;
     if (repeat === 'ai') {
@@ -557,9 +591,16 @@ function openTaskEditor(t, after) {
     }
     if (repeat !== 'once' && $('#tLast').value && $('#tLast').value !== t.last_done) data.last_done = $('#tLast').value;
     busy(e.currentTarget, async () => {
-      const saved = await api('tasks.save', data);
+      let saved;
+      try { saved = await api('tasks.save', data); }
+      catch (err) {
+        if (!/^DUPLICATE:/.test(err.message)) throw err;
+        if (!confirm(err.message.replace(/^DUPLICATE:\s*/, '') + ' Add another one anyway?')) return;
+        saved = await api('tasks.save', { ...data, allow_duplicate: true });
+      }
       closeModal();
-      toast(saved.interval_mode === 'ai' && saved.interval_reason ? `Every ${saved.interval_days} days. ${saved.interval_reason}` : 'Saved.');
+      toast(saved.interval_mode === 'ai' && saved.interval_reason ? `Every ${saved.interval_days} days. ${saved.interval_reason}`
+        : saved.remind_at ? `Saved. Reminder ${rel(saved.remind_at.slice(0, 10))} at ${time12(saved.remind_at.slice(11))}.` : 'Saved.');
       patchTask(saved); after?.();
     }).catch(fail);
   };
@@ -580,6 +621,21 @@ function parsePeople(str) {
   return [{ id: 'me', name: 'Me', kind: 'adult', notes: '' }];
 }
 function people() { return state.today?.people || parsePeople(state.settings?.people); }
+
+// Who is talking on this phone right now. Normally the person signed in; on a shared phone someone can say
+// "This is Sam" / "It's Alex" / "我是…" and the assistant talks with them (for 30 minutes after their last message).
+let speaker = null;   // {id, name, until}
+function speakerFor(text) {
+  const m = /^\s*(?:(?:hi|hey|hello|ok|okay)[,!.\s]+)?(?:[\p{L}]+[,!.\s]+)?(?:this is|it'?s|it is|i'?m|i am|我是|我係|我系)\s*([\p{L}][\p{L}'-]*)/iu.exec(String(text || ''));
+  if (m) {
+    const n = m[1].toLowerCase();
+    const p = people().find(x => { const nm = String(x.name || '').toLowerCase(); return nm === n || nm.split(/\s+/)[0] === n; });
+    if (p) speaker = p.id === (state.me?.person_id || 'me') ? null : { id: p.id, name: p.name };
+  }
+  if (speaker && speaker.until && speaker.until < Date.now()) speaker = null;
+  if (speaker) speaker.until = Date.now() + 30 * 60 * 1000;
+  return speaker ? speaker.id : undefined;
+}
 function personName(id) { const ps = people(); return (ps.find(p => p.id === id) || ps[0]).name; }
 function myPersonId() { return state.me?.person_id || 'me'; }
 function setPerson(id) { lsSet('homebase.person', id); }
@@ -746,6 +802,7 @@ function paintFood() {
         ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Pick your cuisines, then rate 30 dish photos (about a minute) so ideas fit from day one.</span></span><span aria-hidden="true">›</span></button>`
         : `<button type="button" class="btn small ghost" id="fTaste" style="margin-top:8px">Taste quiz · ${state.taste[myPersonId()]} rated</button>`}
     </div>
+    ${groceryCardHtml()}
     ${planned.length ? `<div class="section-title">Up next<span>${planned.length}</span></div><div class="card meal-list up-next">${planned.map(m => `
       <div class="next-row" data-next="${esc(m.id)}">
         <span class="idea-i">${m.source === 'homemade' ? '🏠' : m.source === 'takeout' ? '🥡' : '🍽️'}</span>
@@ -761,6 +818,7 @@ function paintFood() {
     ${list.length > shown.length ? `<button class="btn ghost block" id="fMore">Show earlier meals</button>` : ''}
     <div class="spacer"></div>`;
   $('#fGuess').onclick = () => openGuess();
+  bindGroceryCard();
   $('#fTaste').onclick = () => openTasteQuiz(myPersonId());
   $$('#fFilter [data-f]').forEach(b => b.onclick = () => { state.ffilter = b.dataset.f; paintFood(); });
   $('#fMore')?.addEventListener('click', () => { state.fshow += 60; paintFood(); });
@@ -787,6 +845,124 @@ function upsertMeal(m, removed) {
   if (location.hash === '#food') paintFood();
 }
 
+// ================= GROCERIES =================
+// Plan meals for a shopping trip → one shared shopping list from their recipes → scratch what you already have.
+const GROC_NEEDS = ['Quick & easy', 'Healthy', 'Kid-friendly', 'Budget', 'Vegetarian', 'Something new'];
+const GROCERY_TASK_RE = /grocer|supermarket|costco|trader joe|whole foods|h ?mart|aldi|wegmans|safeway|kroger|food shopping|shopping list|买菜|買菜|超市/i;
+const SECTION_ICON = { produce: '🥬', 'meat & seafood': '🍗', 'dairy & eggs': '🥚', bakery: '🍞', pantry: '🥫', frozen: '🧊', drinks: '🧃', household: '🧻', other: '🛒' };
+
+function groceryCardHtml() {
+  const g = state.grocery;
+  const has = g && g.total;
+  return `<div class="card groc-card">
+    <div class="groc-top"><span class="groc-i" aria-hidden="true">🛒</span>
+      <span class="grow"><b>Groceries</b><span class="muted small">${has ? `${g.left} to buy${g.total - g.left ? ` · ${g.total - g.left} scratched` : ''}${g.meals ? ` · ${g.meals} meals` : ''}` : 'Plan meals for your next shop and get one list.'}</span></span></div>
+    <div class="btn-row" style="margin-top:10px">${has ? '<button class="btn small primary" id="gOpen">Open list</button><button class="btn small" id="gPlan">Plan new meals</button>' : '<button class="btn small primary" id="gPlan">Plan meals & list</button>'}</div>
+  </div>`;
+}
+function bindGroceryCard() {
+  $('#gPlan')?.addEventListener('click', () => openGroceryPlanner());
+  $('#gOpen')?.addEventListener('click', () => openGroceryList());
+}
+function setGrocery(g) {
+  state.grocery = { left: g.items.filter(i => !i.status).length, total: g.items.length, meals: g.meals.length, created: g.created };
+  state.groceryFull = g; saveCache();
+}
+
+function openGroceryPlanner() {
+  let count = 5;
+  const needs = new Set();
+  openModal(`<h3>🛒 Plan meals</h3>
+    <div class="field"><span>How many meals are we shopping for?</span>
+      <div class="fchips" id="gCount">${[3, 4, 5, 7, 10].map(n => `<button type="button" data-n="${n}" class="${n === count ? 'on' : ''}">${n}</button>`).join('')}</div></div>
+    <div class="field"><span>Anything special? <span class="muted">(optional)</span></span>
+      <div class="fchips" id="gNeeds">${GROC_NEEDS.map(x => `<button type="button" data-x="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>
+    <label class="field"><span>Note <span class="muted">(optional)</span></span><input type="text" id="gNote" maxlength="200" placeholder="e.g. we have chicken and rice; one fish night"></label>
+    <button class="btn primary block" id="gGo">Suggest meals</button>`);
+  $$('#gCount [data-n]').forEach(b => b.onclick = () => { count = +b.dataset.n; $$('#gCount [data-n]').forEach(x => x.classList.toggle('on', x === b)); });
+  $$('#gNeeds [data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; needs.has(x) ? needs.delete(x) : needs.add(x); b.classList.toggle('on', needs.has(x)); });
+  $('#gGo').onclick = () => runGroceryPlan({ count, needs: [...needs], note: $('#gNote').value.trim() });
+}
+
+async function runGroceryPlan(q) {
+  const body = openModal(`<h3>🛒 Plan meals</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Picking ${q.count} meals you'll like…</div></div>`);
+  let plan;
+  try { plan = await api('grocery.plan', q, { timeoutMs: 150000 }); }
+  catch (e) { closeModal(); return fail(e); }
+  if (!body.isConnected || $('#modal').hidden) return;
+  let meals = plan.meals || [];
+  const paint = () => {
+    body.innerHTML = `<h3>🛒 ${meals.length} meal${meals.length === 1 ? '' : 's'}</h3>
+      ${plan.intro ? `<div class="muted small" style="margin-bottom:10px">${esc(plan.intro)}</div>` : ''}
+      <div class="plan-list">${meals.map((m, i) => `<div class="plan-row">
+        ${m.photo_url ? `<img class="plan-ph" src="${esc(m.photo_url)}" alt="">` : '<span class="plan-ph plan-ph-i" aria-hidden="true">🍲</span>'}
+        <div class="grow"><b>${esc(m.title)}</b><div class="muted small">${esc([m.time, m.cuisine].filter(Boolean).join(' · '))}</div>
+          ${m.why ? `<div class="small">${esc(m.why)}</div>` : ''}
+          <div class="btn-row plan-acts"><button type="button" class="btn small ghost" data-rcp="${i}">📖 Recipe</button><button type="button" class="btn small ghost" data-swap="${i}">↻ Swap</button><button type="button" class="btn small ghost" data-rm="${i}" aria-label="Remove ${esc(m.title)}">✕</button></div></div>
+      </div>`).join('')}</div>
+      <button class="btn primary block" id="gBuild" ${meals.length ? '' : 'disabled'}>Make shopping list</button>
+      <div class="muted small" style="margin-top:6px;text-align:center">The meals also go to “Up next”, so you can tick them off as you cook.</div>`;
+    $$('[data-rcp]', body).forEach(b => b.onclick = () => { const m = meals[+b.dataset.rcp]; openRecipe({ title: m.title, cuisine: m.cuisine, ingredients: (m.ingredients || []).map(g => g.item + (g.amount ? ' (' + g.amount + ')' : '')) }); });
+    $$('[data-rm]', body).forEach(b => b.onclick = () => { meals.splice(+b.dataset.rm, 1); paint(); });
+    $$('[data-swap]', body).forEach(b => b.onclick = () => busy(b, async () => {
+      const r = await api('grocery.plan', { count: 1, needs: q.needs, note: q.note, exclude: meals.map(m => m.title) }, { timeoutMs: 120000 });
+      if (r.meals?.[0]) { meals[+b.dataset.swap] = r.meals[0]; paint(); }
+    }).catch(fail));
+    $('#gBuild').onclick = e => busy(e.currentTarget, async () => {
+      const g = await api('grocery.build', { meals }, { timeoutMs: 120000 });
+      setGrocery(g); invalidate(); refreshAll();
+      openGroceryList(g);
+      toast(`Shopping list ready: ${g.items.length} items. Tap anything you already have.`);
+    }).catch(fail);
+  };
+  paint();
+}
+
+async function openGroceryList(g) {
+  const body = openModal(`<h3>🛒 Shopping list</h3><div class="guess-wait"><span class="spinner"></span></div>`);
+  if (!g) {
+    try { g = await api('grocery.get'); } catch (e) { closeModal(); return fail(e); }
+    if (!body.isConnected || $('#modal').hidden) return;
+  }
+  setGrocery(g);
+  const paint = () => {
+    const left = g.items.filter(i => !i.status).length;
+    const sections = [];
+    g.items.forEach(i => { const s = sections.find(x => x.name === i.section); if (s) s.items.push(i); else sections.push({ name: i.section, items: [i] }); });
+    body.innerHTML = `<h3>🛒 Shopping list</h3>
+      <div class="muted small" style="margin:-4px 0 10px">${g.items.length ? `${left} to buy · tap what you already have to scratch it` : 'Empty. Add things below, or plan meals.'}</div>
+      <form class="groc-add" id="gAddF"><input type="text" id="gAdd" placeholder="Add an item (e.g. milk, eggs)" autocomplete="off" maxlength="60"><button class="btn small primary">Add</button></form>
+      ${g.meals.length ? `<div class="groc-meals">${g.meals.map((m, i) => `<button type="button" class="chip" data-mr="${i}">📖 ${esc(m.name)}</button>`).join('')}</div>` : ''}
+      ${sections.map(s => `<div class="section-title" style="margin-left:0">${SECTION_ICON[s.name] || '🛒'} ${esc(s.name)}<span>${s.items.filter(i => !i.status).length}</span></div>
+        <div class="groc-list">${s.items.slice().sort((a, b) => (!!a.status - !!b.status)).map(i => `<button type="button" class="groc-item${i.status ? ' have' : ''}" data-gi="${esc(i.id)}" aria-pressed="${i.status ? 'true' : 'false'}">
+          <span class="groc-box" aria-hidden="true">${i.status ? '✓' : ''}</span>
+          <span class="grow"><span class="groc-name">${esc(i.name)}</span>${i.amount ? ` <span class="muted small">${esc(i.amount)}</span>` : ''}
+            ${i.meals ? `<span class="groc-for muted small">for ${esc(i.meals)}</span>` : ''}</span>
+          ${i.status ? '<span class="muted small">have it</span>' : ''}</button>`).join('')}</div>`).join('')}
+      <div class="btn-row" style="margin-top:14px">${g.items.length ? '<button class="btn small" id="gCopy">Copy list</button>' : ''}<button class="btn small" id="gNew">Plan new meals</button>${g.items.length ? '<button class="btn small ghost" id="gClear">Clear list</button>' : ''}</div>`;
+    $$('[data-gi]', body).forEach(b => b.onclick = () => {
+      const it = g.items.find(x => x.id === b.dataset.gi); if (!it) return;
+      it.status = it.status ? '' : 'have'; paint(); setGrocery(g);
+      api('grocery.set', { id: it.id, status: it.status }).then(fresh => { g = fresh; setGrocery(g); }).catch(e => { it.status = it.status ? '' : 'have'; paint(); fail(e); });
+    });
+    $$('[data-mr]', body).forEach(b => b.onclick = () => { const m = g.meals[+b.dataset.mr]; const r = m.recipe || {};
+      openRecipe({ title: m.name, cuisine: r.cuisine, ingredients: (r.ingredients || []).map(x => x.item + (x.amount ? ' (' + x.amount + ')' : '')) }); });
+    $('#gAddF').onsubmit = e => {
+      e.preventDefault();
+      const v = $('#gAdd').value.trim(); if (!v) return;
+      busy(e.submitter || $('#gAddF button'), async () => { g = await api('grocery.set', { add: v.split(/\s*,\s*/) }); setGrocery(g); paint(); $('#gAdd')?.focus(); }).catch(fail);
+    };
+    $('#gCopy')?.addEventListener('click', () => {
+      let sec = '';
+      const text = g.items.filter(i => !i.status).map(i => { const h = i.section !== sec ? (sec = i.section, `\n${sec.toUpperCase()}\n`) : ''; return h + '• ' + i.name + (i.amount ? ' (' + i.amount + ')' : ''); }).join('\n').trim();
+      navigator.clipboard?.writeText(text).then(() => toast('Copied. Paste it anywhere.')).catch(() => toast('Copy not allowed here.', true));
+    });
+    $('#gNew').onclick = () => openGroceryPlanner();
+    $('#gClear')?.addEventListener('click', e => { if (!confirm('Clear the whole shopping list?')) return; busy(e.currentTarget, async () => { g = await api('grocery.set', { clear: true }); setGrocery(g); paint(); }).catch(fail); });
+  };
+  paint();
+}
+
 // --- add / edit a meal ---
 // Stage 1 (new meal): food photo, optional receipt, a note, who ate → "Read it" (AI) or fill in by hand.
 // Stage 2: the form (pre-filled by the AI), then Save.
@@ -800,7 +976,7 @@ function openMealEditor(meal, prefill, opts = {}) {
       <label class="snap" id="snapFood"><input type="file" accept="image/*" id="mPhoto" hidden><span class="ph snap-ph" id="mPhotoPh"><span class="ph-i">📷</span></span><span class="small">Food photo</span></label>
       <label class="snap" id="snapRcpt"><input type="file" accept="image/*" id="mRcpt" hidden><span class="ph snap-ph" id="mRcptPh"><span class="ph-i">🧾</span></span><span class="small">Receipt <span class="muted">(optional)</span></span></label>
     </div>
-    <label class="field"><span>Anything to add? (optional)</span><input type="text" id="mHint" placeholder="e.g. half portion, shared with Drey" maxlength="200"></label>
+    <label class="field"><span>Anything to add? (optional)</span><input type="text" id="mHint" placeholder="e.g. half portion, shared with Sam" maxlength="200"></label>
     ${ps.length > 1 ? `<div class="field"><span>Who ate</span><div class="fchips" id="mWho">${ps.map(p => `<button type="button" data-p="${esc(p.id)}" class="${draft.people.includes(p.id) ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div></div>` : ''}
     <button class="btn primary block" id="mRead">Read it</button>
     <button class="btn ghost block" id="mByHand" style="margin-top:6px">Fill in by hand</button>`);
@@ -1170,10 +1346,10 @@ function quickBox() {
   quickEl = document.createElement('div');
   quickEl.className = 'card quick';
   quickEl.innerHTML = `<form id="qForm" class="qform">
-      <textarea id="qIn" rows="1" placeholder="Tell me what happened or ask anything…" autocomplete="off"></textarea>
+      <textarea id="qIn" rows="2" placeholder="Tell me what happened or ask anything…" autocomplete="off"></textarea>
       <div class="qbar">
-        <button type="button" class="attach" id="qAttach" aria-label="Add a photo or screenshot">📎</button><input type="file" id="qFile" accept="image/*" hidden>
-        ${SR ? '<button type="button" class="attach mic" id="qMic" aria-label="Speak">🎤</button>' : ''}
+        <button type="button" class="attach" id="qAttach" aria-label="Add a photo or screenshot">${ICON_CLIP}</button><input type="file" id="qFile" accept="image/*" hidden>
+        ${SR ? `<button type="button" class="attach mic" id="qMic" aria-label="Speak (turns speech into text)">${ICON_MIC}</button>` : ''}
         <span class="grow muted small" id="qHint"></span>
         <button class="btn primary" id="qSend">Send</button>
       </div></form>
@@ -1213,7 +1389,7 @@ async function quickSend() {
   const shown = sh ? text + '\n📎 ' + (sh.image ? 'photo' : (sh.text || '').slice(0, 80)) : text;
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
-    const r = await api('chat.send', { message: text, shared, mode: 'quick' }, { timeoutMs: 120000 });
+    const r = await api('chat.send', { message: text, shared, mode: 'quick', speaker: speakerFor(text) }, { timeoutMs: 120000 });
     state.chat = state.chat || [];
     state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined });
     saveCache();
@@ -1275,7 +1451,7 @@ function voiceCardHtml() {
       <div class="muted small" id="sChirpNote" style="margin:-4px 0 12px"></div>
       <label class="field"><span>Phone voice (used when the natural voice isn't available)</span><select id="sVoiceName"></select></label>
       <label class="field"><span>Speed <b id="sRateVal">${rate.toFixed(1)}×</b></span><input type="range" id="sVoiceRate" min="0.7" max="1.5" step="0.1" value="${rate}"></label>
-      <label class="field check-field row-field"><input type="checkbox" id="sTalkOpen" ${lsGet('homebase.talkOnOpen', '0') === '1' ? 'checked' : ''}><span>Start talking to ${nm} when I open Homebase <span class="muted small">(for “Hey Google, open Homebase”; not when a notification opens it)</span></span></label>
+      <label class="field check-field row-field"><input type="checkbox" id="sTalkOpen" ${lsGet('homebase.talkOnOpen', '1') === '1' ? 'checked' : ''}><span>Start talking to ${nm} when I open Homebase <span class="muted small">(for “Hey Google, open Homebase”; not when a notification opens it)</span></span></label>
       <div class="row"><button type="button" class="btn small" id="sVoiceTest">▶ Test</button><button type="button" class="btn small" id="sTalkNow">🎙 Talk to ${nm}</button></div>
     </div>`;
 }
@@ -1508,7 +1684,7 @@ function normSpeech(t) {
 const END_RE = /^(?:(?:ok|okay|alright|great|perfect|cool)\s+)?(?:thanks|thank you|thank you so much|thanks a lot|thanks so much|bye|bye bye|goodbye|good bye|thanks bye|thank you bye|thanks goodbye|thank you goodbye|谢谢|謝謝|多谢|多謝|拜拜|再见|再見|谢谢 再见|謝謝 再見)$/;
 const CANCEL_RE = /^(?:never ?mind|cancel|cancel that|forget it|算了|取消|唔使)$/;
 
-function talkGreeting() { return langFamily(voiceLang()) === 'zh' ? `我在。有什么可以帮你？` : `I'm here. How can I help?`; }
+function talkGreeting() { return langFamily(voiceLang()) === 'zh' ? `你好！我在。有什么可以帮你？` : `Hello! I'm here. How can I help?`; }
 
 function talkHtml() {
   const nm = esc(assistantName());
@@ -1696,7 +1872,7 @@ async function talkAsk(text, g) {
   state.chat.push({ role: 'user', content: text });
   let reply, actions = [];
   try {
-    const r = await api('chat.send', { message: text, mode: 'talk' }, { timeoutMs: 120000 });
+    const r = await api('chat.send', { message: text, mode: 'talk', speaker: speakerFor(text) }, { timeoutMs: 120000 });
     reply = r.reply || 'Done.';
     actions = r.actions || [];
     state.chat.push({ role: 'assistant', content: reply, charts: r.charts?.length ? r.charts : undefined });
@@ -1743,12 +1919,12 @@ function maybeTalkOnOpen() {
     try { history.replaceState(null, '', location.pathname + (location.hash || '#today')); } catch { /* fine */ }
   }
   if (!isConfigured()) return;
-  if (forced || (byYou && lsGet('homebase.talkOnOpen', '0') === '1')) setTimeout(() => openTalk({ auto: true }), 350);
+  if (forced || (byYou && lsGet('homebase.talkOnOpen', '1') === '1')) setTimeout(() => openTalk({ auto: true }), 350);
 }
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { hiddenAt = Date.now(); return; }
-  if (talk.on || !hiddenAt || Date.now() - hiddenAt < 10 * 60 * 1000 || lsGet('homebase.talkOnOpen', '0') !== '1' || !isConfigured()) return;
+  if (talk.on || !hiddenAt || Date.now() - hiddenAt < 10 * 60 * 1000 || lsGet('homebase.talkOnOpen', '1') !== '1' || !isConfigured()) return;
   // a notification tap reloads the page with ?from=notify instead; give that a moment to happen
   setTimeout(() => { if (!document.hidden && !talk.on && $('#modal').hidden) openTalk({ auto: true }); }, 700);
 });
@@ -1760,7 +1936,7 @@ document.addEventListener('visibilitychange', () => {
   const wrap = document.createElement('div');
   wrap.className = 'top-acts';
   gear.replaceWith(wrap);
-  wrap.innerHTML = `<button class="icon-btn" id="talkBtn" aria-label="Talk"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></button>`;
+  wrap.innerHTML = `<button class="icon-btn" id="talkBtn" aria-label="Talk to ${esc(assistantName())}">${ICON_MIC.replace(/width="20" height="20"/, 'width="22" height="22"')}</button>`;
   wrap.appendChild(gear);
   $('#talkBtn').onclick = () => openTalk();
 })();
@@ -1799,15 +1975,20 @@ async function renderChat() {
   const composer = document.createElement('form');
   composer.className = 'composer';
   composer.innerHTML = `<div id="shareChip" class="share-chip" hidden></div>
-    <button type="button" class="attach" id="chatAttach" aria-label="Add a photo or screenshot">📎</button><input type="file" id="chatFile" accept="image/*" hidden>
-    ${SR ? '<button type="button" class="attach mic" id="chatMic" aria-label="Speak">🎤</button>' : ''}
-    <textarea id="chatInput" rows="1" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
-    <button class="btn primary" aria-label="Send">Send</button>`;
+    <div class="cbox">
+      <textarea id="chatInput" rows="2" placeholder="Ask or tell me anything…" autocomplete="off"></textarea>
+      <div class="cbar">
+        <button type="button" class="attach" id="chatAttach" aria-label="Add a photo or screenshot">${ICON_CLIP}</button><input type="file" id="chatFile" accept="image/*" hidden>
+        ${SR ? `<button type="button" class="attach mic" id="chatMic" aria-label="Speak (turns speech into text)">${ICON_MIC}</button>` : ''}
+        <span class="grow"></span>
+        <button class="btn primary" aria-label="Send">Send</button>
+      </div>
+    </div>`;
   document.body.appendChild(composer);
   const ta = $('#chatInput');
   const grow = () => {
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    ta.style.height = Math.max(52, Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))) + 'px';
     const l = $('#chatList'); if (l) l.style.paddingBottom = (composer.offsetHeight + 16) + 'px';
   };
   ta.addEventListener('input', grow);
@@ -1851,7 +2032,7 @@ async function renderChat() {
   // Saved conversation shows at once; the server copy is checked once per app start.
   const loadHistory = () => api('chat.history', { limit: 30 }).then(h => {
     state.chatFresh = true;
-    const fresh = h.map(m => ({ role: m.role, content: m.content, charts: Array.isArray(m.chart) && m.chart.length ? m.chart : undefined }));
+    const fresh = h.map(m => ({ role: m.role, content: m.content, kind: m.kind || undefined, charts: Array.isArray(m.chart) && m.chart.length ? m.chart : undefined }));
     if (state.chat?.some(m => m.typing)) return;                // a reply is on its way; don't disturb
     state.chat = fresh; saveCache(); if (location.hash === '#chat') paintChat();
   });
@@ -1883,7 +2064,7 @@ function paintChat(loading = false) {
   const msgs = state.chat || [];
   list.innerHTML = (msgs.length ? '' : `<div class="empty"><div class="big">Hi! What's on your mind?</div>
       I know your tasks, calendar and the weather. You can also just tell me things you did.</div>`) +
-    msgs.map((m, i) => `<div class="msg ${m.role}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
+    msgs.map((m, i) => `<div class="msg ${m.role}${m.kind === 'brief' ? ' brief' : ''}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
   $$('[data-say]', list).forEach(b => b.onclick = () => speak((state.chat || [])[+b.dataset.say]?.content));
@@ -1905,7 +2086,7 @@ async function sendChat(text, viaMic = false) {
   paintChat();
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
-    const r = await api('chat.send', { message: text, shared }, { timeoutMs: 120000 });
+    const r = await api('chat.send', { message: text, shared, speaker: speakerFor(text) }, { timeoutMs: 120000 });
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined }); saveCache();
     if (viaMic) speak(r.reply);
