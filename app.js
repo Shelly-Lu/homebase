@@ -620,6 +620,18 @@ function parsePeople(str) {
   try { const l = JSON.parse(str || '[]'); if (Array.isArray(l) && l.length) return l; } catch { /* default */ }
   return [{ id: 'me', name: 'Me', kind: 'adult', notes: '' }];
 }
+// How long the last reply took, shown in Settings → AI models (to see where the time goes).
+function noteTiming(t) {
+  if (!t || !t.total_ms) return;
+  try { lsSet('homebase.lastTiming', JSON.stringify({ ...t, at: Date.now() })); } catch { /* fine */ }
+}
+function timingText() {
+  let t; try { t = JSON.parse(lsGet('homebase.lastTiming', '') || 'null'); } catch { t = null; }
+  if (!t) return '';
+  const s = ms => (ms / 1000).toFixed(1) + ' s';
+  return `Last reply took <b>${s(t.total_ms)}</b> on the server: AI ${s(t.ai_ms)} (${t.ai_steps} step${t.ai_steps === 1 ? '' : 's'}${t.cached_tokens ? ', instructions cached' : ''}), reading the Sheet ${s(t.prompt_ms)}, actions ${s(t.tools_ms)}, saving ${s(t.save_ms)}${t.voice_ms ? ', voice ' + s(t.voice_ms) : ''}. Plus a second or two to reach Google.`;
+}
+
 function people() { return state.today?.people || parsePeople(state.settings?.people); }
 
 // Who is talking on this phone right now. Normally the person signed in; on a shared phone someone can say
@@ -1390,6 +1402,7 @@ async function quickSend() {
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
     const r = await api('chat.send', { message: text, shared, mode: 'quick', speaker: speakerFor(text) }, { timeoutMs: 120000 });
+    noteTiming(r.timing);
     state.chat = state.chat || [];
     state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined });
     saveCache();
@@ -1870,10 +1883,14 @@ async function talkAsk(text, g) {
   talkLine('talkReply', ''); talkLine('talkDone', '');
   state.chat = state.chat || [];
   state.chat.push({ role: 'user', content: text });
-  let reply, actions = [];
+  let reply, actions = [], replyAudio = null;
   try {
-    const r = await api('chat.send', { message: text, mode: 'talk', speaker: speakerFor(text) }, { timeoutMs: 120000 });
+    const v = chirpVoice();
+    const r = await api('chat.send', { message: text, mode: 'talk', speaker: speakerFor(text),
+      voice: v ? { voice: v, lang: ttsLang(text), rate: Number(lsGet('homebase.voiceRate', '1')) || 1 } : undefined }, { timeoutMs: 120000 });
+    noteTiming(r.timing);
     reply = r.reply || 'Done.';
+    replyAudio = r.audio ? 'data:' + (r.mime || 'audio/mpeg') + ';base64,' + r.audio : null;
     actions = r.actions || [];
     state.chat.push({ role: 'assistant', content: reply, charts: r.charts?.length ? r.charts : undefined });
     saveCache();
@@ -1885,7 +1902,14 @@ async function talkAsk(text, g) {
   if (!talk.on || g !== talk.gen) return;
   talkLine('talkReply', md(reply));
   talkLine('talkDone', actions.map(a => `<div>✓ ${esc(a.label)}</div>`).join(''));
-  const r = await talkSay(reply);
+  let r;
+  if (replyAudio) {                     // the voice came back with the reply: play it straight away
+    setTalk('speaking', '');
+    stopSpeaking();
+    r = await playAudio(replyAudio);
+    if (!talk.on || g !== talk.gen) return;
+    if (r === 'error' || r === 'blocked') r = await talkSay(reply);
+  } else r = await talkSay(reply);
   if (r === 'stopped' || !talk.on || g !== talk.gen) return;
   talkListen();
 }
@@ -2087,6 +2111,7 @@ async function sendChat(text, viaMic = false) {
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
     const r = await api('chat.send', { message: text, shared, speaker: speakerFor(text) }, { timeoutMs: 120000 });
+    noteTiming(r.timing);
     state.chat.pop();
     state.chat.push({ role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined }); saveCache();
     if (viaMic) speak(r.reply);
@@ -2446,6 +2471,7 @@ function paintServerSettings() {
     const rows = Object.entries(u.calls || {});
     el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (food ideas).<br>` +
       (rows.length ? 'Requests today: ' + rows.map(([m, n]) => `${esc(m)} ${n}`).join(' · ') : 'No AI requests yet today.') +
+      (timingText() ? '<br>' + timingText() : '') +
       (u.cost_month ? `<br>Claude this month: about <b>$${u.cost_month.usd.toFixed(2)}</b> (${Math.round(u.cost_month.tokens / 1000)}k tokens, estimate). Your real bill is at console.anthropic.com.` : '<br>Your exact free limits are listed in Google AI Studio.');
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
 
