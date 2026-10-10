@@ -274,6 +274,7 @@ This list is also the **only** email the chat can see. Ask "anything from the sc
   - *Tabs open instantly:* the app keeps a copy of everything on your phone and shows it at once; one background request refreshes all tabs together (at most once a minute, or when you come back to the app). The app's own files also load from the phone, and a new version is picked up the next time you open it.
   - *Food ideas* take a few seconds (one AI request on the food ideas model); the questions themselves need no server call. Reading a meal photo takes a few seconds too.
   - The first request after a quiet period is slower while Google wakes the script, but you won't wait for it: the saved copy is already on screen.
+  - *Chat replies:* Bella's fixed instructions are cached by Claude, so only today's details (time, tasks, notes) are read fresh each message. A plain answer takes one AI step; logging something takes two (do it, then confirm). In talk mode the voice comes back with the reply. **Settings → AI models** shows how long the last reply took and where the time went (AI, reading the Sheet, actions, saving, voice).
 - **Choosing models yourself.** In Settings → *AI models & today's usage*, replace `auto` with an exact model name from AI Studio. Set it back to `auto` to return to automatic choice.
 - **Triggers.** Morning brief and evening check-in times come from Settings; changing them there reinstalls the triggers. Email scanning runs hourly.
 
