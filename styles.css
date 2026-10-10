@@ -579,4 +579,3 @@ body.talking .tabbar, body.talking .composer { display: none; }
 .fab-space { height: 72px; }   /* room so the + button never covers the last line */
 
 /* Bella's note for the day, above what to bring */
-.carry-note { font-size: 15px; line-height: 1.45; margin: 2px 0 8px; }

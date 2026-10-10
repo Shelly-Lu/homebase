@@ -411,13 +411,12 @@ function paintToday() {
 }
 
 // What to bring: after 6pm it shows tomorrow's.
-const CARRY_ICON = { coat: '🧥', jacket: '🧥', umbrella: '☂️', boots: '🥾', sun: '🕶️', water: '💧', allergy: '🤧' };
+const CARRY_ICON = { coat: '🧥', jacket: '🧥', umbrella: '☂️', boots: '🥾', sun: '🕶️', water: '💧', allergy: '🤧', lips: '🧴', flu: '💉' };
 function carryHtml(t) {
   const evening = new Date().getHours() >= 18 && t.tomorrow_carry;
   const c = evening ? t.tomorrow_carry : t.carry;
   if (!c) return '';
-  const note = evening ? t.tomorrow_note : t.day_note;
-  return `<div class="carry">${note && note !== c.line ? `<div class="carry-note">${esc(note)}</div>` : ''}<div class="muted small">${evening ? 'Tomorrow, bring' : 'Bring'}</div>
+  return `<div class="carry">${c.weather ? `<div class="small"><b>${evening ? 'Tomorrow' : 'Weather'}:</b> ${esc(c.weather)}</div>` : ''}<div class="muted small" style="margin-top:6px">${evening ? 'Tomorrow, bring' : 'Bring'}</div>
     ${c.items?.length ? `<div class="carry-items">${c.items.map(i => `<span class="carry-i"><span aria-hidden="true">${CARRY_ICON[i.key] || '•'}</span><b>${esc(i.text)}</b>${i.why ? `<span class="muted">${esc(i.why)}</span>` : ''}</span>`).join('')}</div>`
       : `<div class="small">${evening ? 'Nothing extra tomorrow.' : 'Nothing extra today.'}</div>`}</div>`;
 }
@@ -2110,7 +2109,7 @@ function speak(text, opts) { say(text, opts); }
 // ================= TALK MODE =================
 // Hands-free conversation: the assistant greets you, listens, sends as soon as you finish speaking, reads the answer
 // and listens again. "Thanks" or "bye" ends it; so do two silences in a row. "Never mind" drops what you said.
-const TALK_PAUSE_MS = 2500;          // safety only: talk mode sends as soon as Chrome hears you stop
+const TALK_PAUSE_MS = 2000;          // talk mode sends after this much quiet, so a pause mid-sentence doesn't cut you off (tap the circle to send sooner)
 const TALK_WAIT_MS = 9000;           // how long it waits for you to start talking
 const talk = { on: false, gen: 0, state: 'idle', rec: null, silences: 0, wake: null, wakeP: null, finishNow: null, el: null,
   blocked: false, greeting: '', pending: null, refreshAfter: false, stopAt: 0, back: null };
@@ -2269,7 +2268,7 @@ function talkTap() {
   }
 }
 
-// Listens until you finish speaking (Chrome's final result), or TALK_WAIT_MS without starting.
+// Listens until you have been quiet for TALK_PAUSE_MS (Chrome restarts itself at each pause, so keep going), or TALK_WAIT_MS without starting.
 // "Listening…" shows only once the microphone is really open.
 function listenFor(g) {
   return new Promise((resolve, reject) => {
@@ -2306,7 +2305,8 @@ function listenFor(g) {
         live = t.trim();
         if (live) { lastHeard = Date.now(); talkLine('talkHeard', esc(text())); }
         const last = e.results[e.results.length - 1];
-        if (last && last.isFinal && text()) finish();    // Chrome has your final words: send now, no wait for the end
+        // "bye" / "thanks" / "never mind" are complete on their own: no pause wait
+        if (last && last.isFinal && text() && (END_RE.test(normSpeech(text())) || CANCEL_RE.test(normSpeech(text())))) finish();
       };
       r.onerror = e => {
         if (r !== rec) return;
@@ -2319,7 +2319,6 @@ function listenFor(g) {
         if (r !== rec) return;
         committed = text(); live = '';
         if (finished) return;
-        if (committed) return finish();                  // you finished speaking: send now (talk mode doesn't wait)
         if (errors > 4) { stopAll(); return reject(new Error("I can't hear right now. Check the connection, then tap.")); }
         setTimeout(begin, 80);
       };
