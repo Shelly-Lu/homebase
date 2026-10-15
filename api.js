@@ -36,6 +36,7 @@ function reqIdFor(key) {
   return hit ? hit.id : newId();
 }
 
+export const apiInfo = { retried: false };   // true when the last call had to be sent again
 class NetError extends Error {}
 async function once(url, body, timeoutMs) {
   const ctrl = new AbortController();
@@ -72,12 +73,14 @@ export async function api(action, data = {}, { timeoutMs = 90000, cfg = null } =
   const req_id = write ? reqIdFor(key) : '';
   const body = JSON.stringify(write ? { token, action, data, req_id } : { token, action, data });
   let out;
+  apiInfo.retried = false;
   try {
     try { out = await once(url, body, timeoutMs); }
     catch (e) {
       if (!(e instanceof NetError)) throw e;
       // one more try after a dropped connection (Android can cut requests when the app goes to the background)
       if (/took too long/.test(e.message)) throw e;
+      apiInfo.retried = true;
       await new Promise(r => setTimeout(r, write ? 1500 : 600));
       out = await once(url, body, timeoutMs);
     }
@@ -87,5 +90,6 @@ export async function api(action, data = {}, { timeoutMs = 90000, cfg = null } =
   }
   if (write) failed.delete(key);
   if (!out || !out.ok) throw new Error((out && out.error) || 'Something went wrong.');
+  if (action === 'chat.send' && (out.data === undefined || out.data === null)) throw new Error('The backend gave an empty answer. Please try again.');
   return out.data;
 }

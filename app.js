@@ -1,5 +1,5 @@
 // app.js: Homebase PWA (no build step; plain ES modules).
-import { api, getCfg, setCfg, isConfigured } from './api.js';
+import { api, apiInfo, getCfg, setCfg, isConfigured } from './api.js';
 
 // ---------------- helpers ----------------
 const $ = (s, el = document) => el.querySelector(s);
@@ -689,7 +689,7 @@ function noteTiming(t) {
 // The phone's side: you stop speaking (or tap Send) → request sent → reply arrived → voice started.
 function notePhoneTiming(mode, tm) {
   if (!tm || !tm.sent || !tm.reply) return;
-  const o = { mode, stop_ms: Math.max(0, tm.sent - (tm.stop || tm.sent)), wait_ms: tm.reply - tm.sent, at: Date.now() };
+  const o = { mode, retried: !!tm.retried, stop_ms: Math.max(0, tm.sent - (tm.stop || tm.sent)), wait_ms: tm.reply - tm.sent, at: Date.now() };
   if (tm.voice) o.voice_ms = Math.max(0, tm.voice - tm.reply);
   o.total_ms = (tm.voice || tm.reply) - (tm.stop || tm.sent);
   lsSet('homebase.phoneTiming', JSON.stringify(o));
@@ -702,10 +702,10 @@ function timingText() {
   let out = '';
   if (t) {
     const steps = Number(t.ai_steps) || 0;
-    out += `Last reply took <b>${s(t.server_ms || t.total_ms)}</b> on the server: AI ${s(t.ai_ms)} (${steps} step${steps === 1 ? '' : 's'}${t.cached_tokens ? ', instructions cached' : ''}), reading the Sheet ${s(t.prompt_ms)}, actions ${s(t.tools_ms)}, saving ${s(t.save_ms)}${t.voice_ms ? ', voice ' + s(t.voice_ms) : ''}.`;
+    out += `Last reply took <b>${s(t.server_ms || t.total_ms)}</b> on the server: AI ${s(t.ai_ms)} (${steps} step${steps === 1 ? '' : 's'}${t.cached_tokens ? ', instructions cached' : ''}), reading the Sheet ${s(t.prompt_ms)}, actions ${s(t.tools_ms)}, saving ${s(t.save_ms)}${t.voice_ms ? ', voice ' + s(t.voice_ms) + (t.voice_chars ? ' for ' + t.voice_chars + ' letters' : '') : ''}.`;
   }
   if (p) {
-    out += `${out ? '<br>' : ''}On the phone (${p.mode === 'talk' ? 'talking' : 'typing'}): ${p.mode === 'talk' ? `you stopped speaking → sent ${s(p.stop_ms)}, ` : ''}waiting for the reply ${s(p.wait_ms)}${p.voice_ms !== undefined ? `, voice started ${s(p.voice_ms)} later` : ''}; <b>${s(p.total_ms)}</b> in all.`;
+    out += `${out ? '<br>' : ''}On the phone (${p.mode === 'talk' ? 'talking' : 'typing'}): ${p.mode === 'talk' ? `you stopped speaking → sent ${s(p.stop_ms)}, ` : ''}waiting for the reply ${s(p.wait_ms)}${p.retried ? ' (the connection dropped and was tried again)' : ''}${p.voice_ms !== undefined ? `, voice started ${s(p.voice_ms)} later` : ''}; <b>${s(p.total_ms)}</b> in all.`;
   } else out += ' Plus a second or two to reach Google.';
   return out;
 }
@@ -2127,13 +2127,13 @@ const isZh = () => langFamily(voiceLang()) === 'zh';
 const lookupPhrase = () => (isZh() ? '我查一下。' : 'Let me look that up.');
 const TALK_PHRASES = ['Bye!', 'Okay.', `I'll be here if you need me.`];
 
-// "Hi, Sam, how can I help?" when this person hasn't used the assistant on this phone for 6 hours, else "I am here."
+// "Hi, Sam, how can I help?" when this person hasn't used the assistant on this phone for 6 hours, else "Hi."
 const GREET_GAP_MS = 6 * 60 * 60 * 1000;
 function greetFresh(name) {
   if (isZh()) return name ? `嗨，${name}，有什么可以帮你？` : '嗨，有什么可以帮你？';
   return name ? `Hi, ${name}, how can I help?` : 'Hi, how can I help?';
 }
-const greetBack = () => (isZh() ? '我在。' : 'I am here.');
+const greetBack = () => (isZh() ? '嗨。' : 'Hi.');
 function talkGreeting() {
   const last = Number(lsGet(lastUseKey(), '0')) || 0;
   return last && Date.now() - last <= GREET_GAP_MS ? greetBack() : greetFresh(myName());
@@ -2399,7 +2399,7 @@ async function talkAsk(text, g) {
     tm.sent = Date.now();
     const r = await api('chat.send', { message: text, mode: 'talk', speaker: speakerFor(text),
       voice: v ? { voice: v, lang: ttsLang(text), rate: voiceRate() } : undefined }, { timeoutMs: 120000 });
-    tm.reply = Date.now();
+    tm.reply = Date.now(); tm.retried = apiInfo.retried;
     noteTiming(r.timing);
     res = { reply: r.reply || 'Done.', actions: r.actions || [], audio: r.audio || '', mime: r.mime || 'audio/mpeg',
       rest: String(r.rest_text || '').trim(), voiceReason: r.voice_reason || '', voice: v, tm };
@@ -3035,7 +3035,7 @@ function paintServerSettings() {
     const sr = u.search;
     el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (food ideas).<br>` +
       (rows.length ? 'Requests today: ' + rows.map(([m, n]) => `${esc(m)} ${Number(n) || 0}`).join(' · ') : 'No AI requests yet today.') +
-      (sr ? `<br>Web searches today: ${Number(sr.today) || 0} of ${Number(sr.cap_day) || 0}${sr.month ? ` (${Number(sr.month) || 0} this month)` : ''}` : '') +
+      (sr ? `<br>Web searches today: ${Number(sr.today) || 0} of ${Number(sr.cap_day) || 0}${sr.month ? ` (${Number(sr.month) || 0} this month)` : ''}${sr.last_error ? `<br>Last web search problem: ${esc(sr.last_error)}` : ''}` : '') +
       (u.cost_month ? `<br>Claude this month: about <b>$${(Number(u.cost_month.usd) || 0).toFixed(2)}</b> (${Math.round((Number(u.cost_month.tokens) || 0) / 1000)}k tokens, estimate). Your real bill is at console.anthropic.com.` : '<br>Your exact free limits are listed in Google AI Studio.');
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
 
