@@ -1,7 +1,7 @@
 // Service worker: the app works offline and starts fast. The page and its main scripts (index.html, app.js, api.js)
 // come from the network first (with a short timeout, then the saved copy); everything else is served from the phone
 // and refreshed in the background. A new VERSION downloads a fresh set of files (never the browser's 10-minute copy).
-const VERSION = 'homebase-v49';
+const VERSION = 'homebase-v50';
 const SHARE_CACHE = 'homebase-share';   // things shared into Homebase wait here until the app picks them up
 const TTS_CACHE = 'homebase-tts';       // short phrases in the natural voice (kept by the app)
 const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './manifest.webmanifest',

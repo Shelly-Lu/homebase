@@ -5,7 +5,8 @@ A personal assistant for your phone, running on free services:
 - **Reminders that learn.** Tell it "I clipped the cat's claws today." It picks a sensible interval from general knowledge, reminds you when it's due, and adapts to how often you actually do it.
 - **What to bring.** Each morning (and on Home) it says what to take from the hourly weather: a jacket, an umbrella, sunglasses, allergy medicine in your allergy months.
 - **Food log and "what should I eat?".** Snap your meals (and a receipt); AI fills in the dish, ingredients, homemade or restaurant, and rough calories. When you can't decide, it asks a few quick questions and suggests three ideas from your habits.
-- **Chat.** Ask "what's due this week?", "what should I eat tonight?", "add kid's dentist Oct 20 at 3pm".
+- **Chat.** Ask "what's due this week?", "what should I eat tonight?", "add kid's dentist Oct 20 at 3pm", "how do I make chicken curry?".
+- **Memory.** Tell it lasting things ("Sam doesn't like mushrooms", "pickup is at 3:15") and Bella keeps them in mind in every chat.
 - **Email watch (optional).** Emails from senders you choose (school, dentist, vet) are read by AI, and dates/to-dos show up for one-tap approval. Nothing outside the senders you choose is ever read.
 - **Phone notifications** through Telegram: a morning brief and an evening check-in.
 
@@ -70,7 +71,7 @@ The models are set in Settings → *AI models, usage & cost* (default `claude-ha
    `Config`, `Sheets`, `Tasks`, `AI`, `Weather`, `People`, `Food`, `Taste`, `Calendar`, `Email`, `Notify`, `Api`, `Charts`, `GrowthData`.
 4. **Project Settings (gear icon)**:
    - Tick **Show "appsscript.json" manifest file in editor**, then open `appsscript.json` in the editor and replace it with `backend/appsscript.json`. Change `"timeZone"` if you aren't on US Eastern time.
-     This file also turns on the **Gmail API** service (you'll see it under *Services* in the left sidebar) and lists the exact permissions the project may use, including **read-only** Gmail and a narrow **Drive** permission (`drive.file`: only files Homebase itself creates, used for meal photos and receipts).
+     This file also turns on the **Gmail API** service (you'll see it under *Services* in the left sidebar) and lists the exact permissions the project may use, including Sheets access to **this spreadsheet only**, **read-only** Gmail and a narrow **Drive** permission (`drive.file`: only files Homebase itself creates, used for meal photos and receipts).
    - Under **Script Properties**, add `GEMINI_API_KEY` = your key.
 5. Back in the editor, choose the function **`setup`** and click **Run**. Approve the permissions: Sheets, Calendar, **View your email messages and settings** (read-only), connect to external services, and run when you're not present (triggers). Google will warn the app is unverified because you wrote it: **Advanced → Go to project**.
    Then choose **`authorizeDrive`** and click **Run** once, to approve the Drive permission and create the private photo folder.
@@ -184,8 +185,21 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - You can add many tasks at once straight in the spreadsheet's **Tasks** tab: fill in `name`, and optionally `next_due` (e.g. 12/15/2026), `interval_days` with `last_done` for repeating ones, `notes`, `category`. Leave `id` blank; Homebase fills in the rest the next time it loads.
 
 **Log: remember anything, look it up later**
-- Tell Homebase anything worth remembering, on Home or in Chat: "Sam had a fever of 101 last night, gave Tylenol at 7", "oil change at 45,000 miles, $89", "spare key is in the blue drawer". It's saved to the **Journal** tab of your spreadsheet (shared with the family unless you say "just for me"), and the Home confirmation has Undo.
-- Ask about the past: "when was the last oil change?", "how many times did Sam have a fever this year?", "what did the vet say?". The assistant searches the Journal, finished tasks (with their notes), meals, measurements, and your own earlier chat messages, and answers with dates.
+- Tell Homebase anything worth remembering, on Home or in Chat: "Sam had a fever of 101 last night, gave Tylenol at 7", "oil change at 45,000 miles, $89", "the plumber fixed the kitchen sink". It's saved to the **Journal** tab of your spreadsheet (shared with the family unless you say "just for me"), and the Home confirmation has Undo.
+- Ask about the past: "when was the last oil change?", "how many times did Sam have a fever this year?", "what did the vet say?". The assistant searches the Journal, finished tasks (with their notes), meals, measurements, and your own earlier chat messages, and answers with dates. The search also tries related words ("doctor" finds "pediatrician", "fever" finds "temperature").
+- The same record saved twice (for example once in the chat and again by the nightly memory) is marked as a duplicate each night: hidden from searches and lists, never deleted (the `dup_of` column says which one it repeats).
+
+**What Bella remembers (lasting facts)**
+- Some things aren't events but facts that stay true: "Sam doesn't like mushrooms", "Alex is allergic to peanuts", "school pickup is 3:15 on weekdays", "the spare key is in the blue drawer". Say them in the chat (or "remember that…") and Bella saves them to the **Memory** tab and keeps them in mind in **every** conversation, without being asked (for example when suggesting food or setting a reminder). The confirmation has Undo.
+- When something changes, just say so ("Sam likes mushrooms now"): the old fact is retired, not lost. "Forget that" removes one for good.
+- Facts are shared with the family unless you say "just for me". Bella never saves passwords, PINs, card, account or ID numbers.
+- **Settings → What Bella remembers** lists them: tap one to edit it, ✕ to forget it, or add your own.
+- The nightly memory also picks up lasting facts from the day's conversation that Bella didn't save (private to you; the night's "Here's your day" lists them), and tidies the list: facts that say the same thing are merged, and an older fact a newer one contradicts is retired (with a note in the Memory tab). It only uses the AI when the list changed, so it costs a few cents a month at most.
+- About 1,000 words of facts go with each message (newest first).
+
+**Recipes**
+- Ask for a dish by name: "how do I make chicken curry?", "recipe for banana bread". The recipe card opens: from TheMealDB when it has the dish (free), otherwise a short recipe the AI writes for your household (it follows allergies and dislikes in Settings → People).
+- On the card: **🛒 Add ingredients to the list** (untick what you already have) and **Add to Up next** (Food). In talk mode Bella says the main steps briefly; the card is waiting in the chat.
 - Everything is kept in the spreadsheet's **Journal** tab (not shown in the app). You can also type rows there; Homebase reads them too.
 - **Every night (11:30 pm)** Homebase also reads that day's conversations and saves anything worth remembering that you didn't explicitly log (what the doctor said, a price, a decision), plus a one-line day summary. These automatic records are marked `auto` and are private to the person who had the conversation.
 
@@ -203,14 +217,13 @@ Tell the chat ("Kid's dentist Oct 20 at 3pm") and it adds a Google Calendar even
 - Replies in the chat are shown as text, not read aloud (also after using 🎤). 🔊 on any reply reads it. For a spoken conversation, use talk mode.
 - Settings → **Voice (this phone)**: the language you speak (English, 中文 普通话 / 台灣, 粵語, or the phone's language), **Bella's voice** (a natural Chirp voice, see setup step 6, or the phone voice), the **phone voice** used as the backup, and the **speed**, with a ▶ Test button. Each phone keeps its own choice. The assistant replies in the language you use.
 
-**Web search (free, through Gemini).** Ask Bella to *look something up* ("look up when the library closes", "search for…", "ask Gemini…") and she asks Gemini with Google Search turned on, then answers in her own voice; in the chat the sources appear as links. She only searches when you ask. It uses your existing Gemini key and Gemini 2.5 (Google's free allowance is about 500 searches a day; Homebase stops at **450 a day for the whole family**, set in `web_search_daily_cap`). It is not available while a child is talking. Settings → AI models shows how many searches were used today.
-
 **Talk mode (hands-free, e.g. while driving)**
 - Start it with the 🎙 button at the top of any screen, by long-pressing the Homebase icon → **Talk to Bella**, or just by opening Homebase (*"Hey Google, open Homebase"*): **Settings → Voice → Start talking to Bella when I open Homebase** is on by default (turn it off per phone). Opening Homebase from a notification never starts it; tap **End** to type instead.
-- Bella says *"Hi, Sam, how can I help?"* (using your name) if it has been more than 6 hours since you last used her on this phone, otherwise just *"Hi."*, and listens. Just talk: after 2 seconds of quiet it sends by itself, she answers out loud, and listens again (a short pause mid-sentence is fine). Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
+- Bella says *"Hi, Sam, how can I help?"* (using your name) if it has been more than 6 hours since you last used her on this phone, otherwise just *"Hi."*, and listens. Just talk: when you pause, it sends by itself, she answers out loud, and listens again. Anything the chat can do works: log a meal, "remind me…", "what should I eat?", "what's due this week?", questions about past records.
 - Say **"thanks"** or **"bye"** to finish (also "thank you", "goodbye", 谢谢, 拜拜, 再见). "Thanks, also add eggs" is not goodbye: it's sent. Say **"never mind"** or **"cancel"** to drop what you just said. If you say nothing twice in a row, it closes.
 - Tap the circle while Bella talks to cut her off and speak; tap while you talk to send right away. **End** closes it.
-- Bella waits for 2 seconds of quiet before answering, so short pauses mid-sentence don't cut you off. "Bye"/"thanks" still end it at once, and tapping the circle sends right away.
+- How long she waits depends on how your sentence ends: about **1.3 seconds** when it sounds finished ("remind me to call the dentist tomorrow at 3"), up to **4 seconds** when it doesn't ("…and", "remind me to", "um"), and 3 seconds for a reminder that hasn't got its time yet. Say **"hold on"** (or "one sec", "let me think", 等一下) and she keeps listening until you go on; those words aren't sent. "Bye"/"thanks" end it at once, and tapping the circle sends right away. Only time with the microphone really open counts, so the short moment when the phone restarts listening never makes her send early.
+- If an answer takes more than a moment, she says a short *"Okay."* / *"One sec."* first (saved on the phone, no waiting), so it isn't silent.
 - The screen stays on while it's open. Replies are kept short and spoken-style; everything also appears in Chat. Charts aren't made in talk mode.
 - Limits of a web app: it can't listen in the background or with the screen off, and it doesn't appear in Android Auto. Chrome may beep each time it starts listening again. If the phone wants a tap before Homebase may speak (some phones, the first time), it shows **Tap to start**.
 - The name: owner's **Settings → Assistant → Assistant's name** (default Bella).
@@ -248,6 +261,12 @@ This list is also the **only** email the chat can see. Ask "anything from the sc
 - Before anything is saved, its date is checked against what you actually said (or the email or flyer it came from). A mismatch, such as "yesterday" saved as today, or "Friday" saved as Saturday, is blocked: nothing is saved, and Bella fixes it or asks you. Things that already happened can't get a future date.
 - Dates in her replies are checked too: "Friday, Oct 17" when Oct 17 is a Saturday gets corrected before you see it. What changed shows the weekday ("Added task … (Fri 2026-10-16)") so a wrong day is easy to spot and undo.
 - Every record keeps the time it was saved ("logged at"). Bella doesn't mention it unless you ask, e.g. "what time did I log the fever?".
+
+**Quick answers (no waiting)**
+- Common questions are answered by the phone itself, from what the app already has, in well under a second and without the AI: "what's on today?", "what do I have tomorrow?", "what's due (this week)?", "what's the weather?", "what should I bring/wear?", "what's on the grocery list?" (this one asks the backend, still without the AI). They work in Chat, on Home and in talk mode, and are saved to the chat like any other answer.
+- Simple saves are confirmed at once while the save runs in the background: "add milk and eggs to the grocery list", "I just did the laundry" / "mark laundry done" (when exactly one task matches). If a save fails, the chat says so (and in talk mode, Bella says so). A done with another day ("yesterday"), anything unclear, or someone else talking on the phone goes to Bella as before.
+- Only when the app's copy is from today and fresh (updated within 3 hours); otherwise Bella answers.
+- In the background, a check every 10 minutes (5 am–11 pm) keeps each person's tasks, calendar, notes and memory ready, so the first message of the morning doesn't wait for the spreadsheet. It's rebuilt right away when tasks, notes, memory, Settings or the calendar (through Homebase) change; a calendar change made elsewhere shows within about 20 minutes.
 
 **Nightly brief and Bella's memory**
 - At 11:30pm Bella reads **all** of the day's conversation (in parts, however long it was) and saves to the Journal: facts and events, meals, **open items** (things still to do or follow up, like "ask the school about Friday pickup"), and **important yearly dates**. A fact whose date is unclear is still saved, on that day, marked "(date unsure)".

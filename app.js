@@ -124,7 +124,7 @@ function time12(hhmm) {
   return m ? `${h}:${String(m).padStart(2, '0')}${ap}` : `${h}${ap}`;
 }
 
-// light markdown: escape, **bold**, bullet lines, [links](https://…) (web search sources)
+// light markdown: escape, **bold**, bullet lines, [links](https://…)
 function md(s) {
   return esc(s).replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]{1,500})\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/^\s*[-*] /gm, '• ');
@@ -1354,10 +1354,38 @@ async function openRecipe(q) {
       <ol class="recipe-steps">${steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
       ${r.tips ? `<p class="tips">${esc(r.tips)}</p>` : ''}
       <div class="recipe-links">${r.youtube ? `<a href="${esc(r.youtube)}" target="_blank" rel="noopener">▶ Video</a>` : ''}${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">Original recipe</a>` : ''}</div>
+      <div class="btn-row recipe-acts" style="margin:4px 0 10px">${ing.length ? '<button type="button" class="btn small" id="rcList">🛒 Add ingredients to the list</button>' : ''}<button type="button" class="btn small ghost" id="rcPlan">Add to Up next</button></div>
+      <div id="rcPick" hidden></div>
       <div class="muted tiny" style="text-align:left">${r.source === 'ai' ? 'Written by AI for your household. Double-check allergies and cooking times.' : 'Recipe and photo: <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>'}</div>`;
     const img = $('.recipe-img', el);
     if (img) fallbackImg(img, r.thumb);
+    bindRecipeActs(el, r, ing, q);
   } catch (e) { close(); fail(e); }
+}
+// Recipe card buttons: tick off what you already have, add the rest to the shared list; or plan it under "Up next".
+function bindRecipeActs(el, r, ing, q) {
+  const name = r.name || q.title || 'Recipe';
+  $('#rcList', el)?.addEventListener('click', () => {
+    const pick = $('#rcPick', el);
+    pick.hidden = false;
+    pick.innerHTML = `<div class="muted small" style="margin-bottom:6px">Untick what you already have:</div>
+      ${ing.map((x, i) => `<label class="row small" style="gap:8px;padding:3px 0"><input type="checkbox" data-ing="${i}" checked> ${esc(x?.item ?? x)}</label>`).join('')}
+      <div class="btn-row" style="margin:8px 0 12px"><button type="button" class="btn small primary" id="rcAdd">Add to the list</button></div>`;
+    $('#rcList', el).hidden = true;
+    $('#rcAdd', el).onclick = e => busy(e.currentTarget, async () => {
+      const items = $$('[data-ing]', el).filter(c => c.checked).map(c => String(ing[+c.dataset.ing]?.item ?? ing[+c.dataset.ing] ?? '').slice(0, 60)).filter(Boolean);
+      if (!items.length) { toast('Nothing ticked.'); return; }
+      const g = await api('grocery.set', { add: items });
+      if (g && Array.isArray(g.items)) setGrocery(g);
+      return items.length;
+    }).then(n => { if (n) pick.innerHTML = `<div class="small" style="margin-bottom:10px">🛒 Added ${n} to the grocery list.</div>`; }, fail);
+  });
+  $('#rcPlan', el)?.addEventListener('click', e => { const b = e.currentTarget; busy(b, async () => {
+    const saved = await api('meals.save', { name, meal: 'dinner', source: 'homemade', cuisine: r.area || '', ingredients: ing.map(x => String(x?.item ?? x)).slice(0, 15),
+      date: todayStr(), time: '', status: 'planned', ai: true });
+    upsertMeal(saved);
+    toast('Saved under "Up next" in Food.');
+  }).then(() => { b.textContent = '✓ Under Up next'; b.disabled = true; }, fail); });
 }
 // If the smaller picture is missing, show the full-size one (set here, not in an inline handler).
 function fallbackImg(img, full) {
@@ -1644,14 +1672,30 @@ async function quickSend() {
   markUse();
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
+    const lt = sh ? null : localTurn(text, { canWrite: localCanWrite(text) });
+    if (lt) {
+      const quick = await chatLocal(text, lt, (e, undo) => {
+        if (e) { res.innerHTML = ''; fail(new Error(`That didn't save: ${e.message}`)); }
+        else if (undo && lt.label && $('.logged', res)) showLogged({ actions: [{ label: lt.label, undo }] });
+      });
+      if (quick !== null) {
+        state.chat = state.chat || [];
+        state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: quick });
+        saveCache();
+        if (lt.label) showLogged({ actions: [{ label: lt.label }] });
+        else { res.innerHTML = ''; location.hash = '#chat'; }
+        return;
+      }
+    }
     tm.sent = Date.now();
     const r = await api('chat.send', { message: text, shared, mode: 'quick', speaker: speakerFor(text) }, { timeoutMs: 120000 });
     tm.reply = Date.now();
     noteTiming(r.timing); notePhoneTiming('chat', tm);
     state.chat = state.chat || [];
-    state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined });
+    state.chat.push({ role: 'user', content: shown }, { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined, recipe: r.recipe || undefined });
     saveCache();
     invalidate((r.actions || []).length ? 1500 : 12000);   // what changed shows on Today a moment later
+    if (r.recipe?.q) { res.innerHTML = ''; location.hash = '#chat'; openRecipe(r.recipe.q); return; }
     if ((r.actions || []).length && !r.asked && !r.charts?.length) showLogged(r);
     else { res.innerHTML = ''; location.hash = '#chat'; }
   } catch (e) {
@@ -2109,7 +2153,29 @@ function speak(text, opts) { say(text, opts); }
 // ================= TALK MODE =================
 // Hands-free conversation: the assistant greets you, listens, sends as soon as you finish speaking, reads the answer
 // and listens again. "Thanks" or "bye" ends it; so do two silences in a row. "Never mind" drops what you said.
-const TALK_PAUSE_MS = 2000;          // talk mode sends after this much quiet, so a pause mid-sentence doesn't cut you off (tap the circle to send sooner)
+// Talk mode sends after a pause that depends on how the sentence ends (tap the circle to send sooner):
+const TALK_PAUSE_MS = 2000;          // unsure (a single word)
+const TALK_DONE_MS = 1300;           // sounds finished ("remind me to call the dentist tomorrow at 3")
+const TALK_OPEN_MS = 4000;           // sounds unfinished ("…and", "remind me to", "um")
+const TALK_HOLD_MS = 20000;          // "hold on" / "wait": keeps listening until you go on
+const HOLD_RE = /(?:^|\s)(?:hold on|hang on|^wait|wait a (?:sec|second|minute|moment)|one sec|one second|just a sec|let me think|等一下|等等|稍等|等一等)$/;
+const OPEN_END_RE = /(?:^|\s)(?:and|but|or|so|to|for|with|the|a|an|my|our|your|his|her|their|at|on|in|of|from|because|then|than|if|that|about|like|um|uh|er|erm|hmm|by|before|after|until|also|plus|remind me|add|i want|i need|can you|could you|please|what about|how about|is|are|was|were|should|would|will)$/;
+const ZH_OPEN_END_RE = /(?:和|跟|还有|然后|因为|所以|但是|还是|的|在|把|给|嗯|呃|那个|就是|提醒我|帮我)$/;
+const TIME_WORD_RE = /\b(?:at|on|in|by|tomorrow|today|tonight|morning|afternoon|evening|night|noon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|week|month|\d)\b|[0-9一二三四五六七八九十]点|明天|今天|后天|下周|周[一二三四五六日天]/;
+// "…, hold on" at the end is left out of what is sent.
+function stripHold(t) {
+  return HOLD_RE.test(normSpeech(t)) ? String(t).replace(/[,.!?;:，。！？\s]*(?:hold on|hang on|wait(?: a (?:sec|second|minute|moment))?|one sec(?:ond)?|just a sec|let me think|等一下|等等|稍等|等一等)[\s.!?。！？]*$/i, '').trim() : t;
+}
+// How long a pause ends this sentence.
+function talkPause(raw) {
+  const n = normSpeech(raw);
+  if (!n) return TALK_PAUSE_MS;
+  if (HOLD_RE.test(n)) return TALK_HOLD_MS;
+  if (OPEN_END_RE.test(n) || ZH_OPEN_END_RE.test(n)) return TALK_OPEN_MS;
+  if (/^(?:please )?remind me\b|^提醒我/.test(n) && !TIME_WORD_RE.test(n)) return 3000;   // a reminder still missing its time
+  if (!/\s/.test(n) && !/[?？]\s*$/.test(raw) && !/[\u4e00-\u9fff]{3,}/.test(n)) return TALK_PAUSE_MS;
+  return TALK_DONE_MS;
+}
 const TALK_WAIT_MS = 9000;           // how long it waits for you to start talking
 const talk = { on: false, gen: 0, state: 'idle', rec: null, silences: 0, wake: null, wakeP: null, finishNow: null, el: null,
   blocked: false, greeting: '', pending: null, refreshAfter: false, stopAt: 0, back: null };
@@ -2121,10 +2187,13 @@ function normSpeech(t) {
 }
 const END_RE = /^(?:(?:ok|okay|alright|great|perfect|cool)\s+)?(?:thanks|thank you|thank you so much|thanks a lot|thanks so much|bye|bye bye|goodbye|good bye|thanks bye|thank you bye|thanks goodbye|thank you goodbye|谢谢|謝謝|多谢|多謝|拜拜|再见|再見|谢谢 ?再见|謝謝 ?再見|多谢 ?再见|多謝 ?再見)$/;
 const CANCEL_RE = /^(?:never ?mind|cancel|cancel that|forget it|算了|取消|唔使)$/;
-// "look it up", "search …", "google …", "ask Gemini", 查一下 / 搜一下: a web search, which takes a few seconds
-const LOOKUP_RE = /\blook\b[^.?!]{0,24}?\bup\b|\bsearch\b|\bgoogle\b|\bask gemini\b|查一下|搜一下|查查|搜搜/i;
 const isZh = () => langFamily(voiceLang()) === 'zh';
-const lookupPhrase = () => (isZh() ? '我查一下。' : 'Let me look that up.');
+// When a reply isn't back quickly, a short kept phrase plays first so the wait isn't silent (no network: saved on the phone).
+const FILLER_MS = 700;
+const FILLERS = { en: ['Okay.', 'One sec.', 'Let me check.'], zh: ['好的。', '稍等。', '我看一下。'] };
+let fillerAt = 0;
+const fillerList = () => FILLERS[isZh() ? 'zh' : 'en'];
+const fillerPhrase = () => { const l = fillerList(); return l[fillerAt++ % l.length]; };
 const TALK_PHRASES = ['Bye!', 'Okay.', `I'll be here if you need me.`];
 
 // "Hi, Sam, how can I help?" when this person hasn't used the assistant on this phone for 6 hours, else "Hi."
@@ -2248,7 +2317,7 @@ async function prefetchPhrases() {
   prefetching = true;
   try {
     await pruneKept(v);
-    for (const p of [...TALK_PHRASES, lookupPhrase(), greetBack(), greetFresh(myName())]) {
+    for (const p of [...TALK_PHRASES, ...fillerList(), greetBack(), greetFresh(myName())]) {
       if (talk.on) return;
       if (await keptGet(keptKey(p, v))) continue;
       try { await naturalAudio(p, v, true); } catch { return; }
@@ -2273,6 +2342,9 @@ function talkTap() {
 function listenFor(g) {
   return new Promise((resolve, reject) => {
     let committed = '', live = '', lastHeard = 0, errors = 0, finished = false, rec = null, openTimer = null;
+    // quiet is counted only while the mic is really open: the moment between two listening sessions (when the phone
+    // restarts listening) doesn't count, so words said then can't make it send early
+    let micOpen = false, quietOpen = 0, lastTick = Date.now();
     const started = Date.now();
     const text = () => (committed + ' ' + live).replace(/\s+/g, ' ').trim();
     const stopAll = () => {
@@ -2282,9 +2354,14 @@ function listenFor(g) {
       if (talk.rec === r) talk.rec = null;
       try { r?.abort(); } catch { /* fine */ }
     };
-    const finish = () => { if (finished) return; const t = text(); talk.stopAt = Date.now(); stopAll(); resolve(t); };
+    const finish = () => {
+      if (finished) return;
+      const t = stripHold(text());
+      talk.stopAt = Date.now(); stopAll(); resolve(t);
+    };
     const opened = r => {
       if (r !== rec || finished) return;
+      micOpen = true;
       clearTimeout(openTimer);
       if (talk.on && g === talk.gen && talk.state === 'opening') setTalk('listening');
     };
@@ -2303,7 +2380,10 @@ function listenFor(g) {
         let t = '';
         for (const x of e.results) t += x[0].transcript;
         live = t.trim();
-        if (live) { lastHeard = Date.now(); talkLine('talkHeard', esc(text())); }
+        if (live) {
+          if (committed && HOLD_RE.test(normSpeech(committed))) committed = stripHold(committed);   // went on after "hold on"
+          lastHeard = Date.now(); quietOpen = 0; talkLine('talkHeard', esc(text()));
+        }
         const last = e.results[e.results.length - 1];
         // "bye" / "thanks" / "never mind" are complete on their own: no pause wait
         if (last && last.isFinal && text() && (END_RE.test(normSpeech(text())) || CANCEL_RE.test(normSpeech(text())))) finish();
@@ -2317,6 +2397,7 @@ function listenFor(g) {
       };
       r.onend = () => {
         if (r !== rec) return;
+        micOpen = false;
         committed = text(); live = '';
         if (finished) return;
         if (errors > 4) { stopAll(); return reject(new Error("I can't hear right now. Check the connection, then tap.")); }
@@ -2327,8 +2408,12 @@ function listenFor(g) {
     const tick = setInterval(() => {
       if (!talk.on || g !== talk.gen) return finish();
       const now = Date.now();
-      if (lastHeard && text() && now - lastHeard >= TALK_PAUSE_MS) finish();
-      else if (!lastHeard && now - started >= TALK_WAIT_MS) finish();
+      if (micOpen) quietOpen += now - lastTick;
+      lastTick = now;
+      if (lastHeard && text()) {
+        const need = talkPause(text());
+        if (quietOpen >= need || now - lastHeard >= need + 6000) finish();   // (the second: the mic never came back)
+      } else if (!lastHeard && now - started >= TALK_WAIT_MS) finish();
     }, 150);
     talk.finishNow = finish;
     begin();
@@ -2375,13 +2460,9 @@ async function talkListen() {
   await talkAsk(heard, g);
 }
 
-// Web search sources go into the chat copy as links (the spoken reply stays clean).
-function sourcesMd(src) {
-  const l = (Array.isArray(src) ? src : []).filter(x => x && /^https?:\/\//.test(String(x.url || ''))).slice(0, 3);
-  return l.length ? '\n' + l.map(x => `- [${String(x.title || x.url).replace(/[[\]\n]/g, ' ').slice(0, 120)}](${String(x.url).replace(/[\s)]/g, '')})`).join('\n') : '';
-}
-
 async function talkAsk(text, g) {
+  const lt = localTurn(text, { canWrite: localCanWrite(text) });
+  if (lt && await talkLocal(text, lt, g)) return;
   const tm = { stop: talk.stopAt || Date.now() };
   setTalk('thinking');
   talkLine('talkReply', ''); talkLine('talkDone', '');
@@ -2391,8 +2472,9 @@ async function talkAsk(text, g) {
   state.chat.push(mine);
   markUse();
   chatInflight++;
-  // a web search takes a few seconds: say so right away (kept phrase, no network)
-  const look = LOOKUP_RE.test(text) ? say(lookupPhrase(), { keep: true, instant: true }) : null;
+  // not back in 0.7 s: "Okay." / "One sec." first, so the wait isn't silent
+  let filler = null;
+  const fillT = setTimeout(() => { if (talk.on && g === talk.gen) filler = say(fillerPhrase(), { keep: true, instant: true }); }, FILLER_MS);
   let res;
   try {
     const v = chirpVoice();
@@ -2403,15 +2485,15 @@ async function talkAsk(text, g) {
     noteTiming(r.timing);
     res = { reply: r.reply || 'Done.', actions: r.actions || [], audio: r.audio || '', mime: r.mime || 'audio/mpeg',
       rest: String(r.rest_text || '').trim(), voiceReason: r.voice_reason || '', voice: v, tm };
-    (state.chat || (state.chat = [])).push({ role: 'assistant', content: res.reply + sourcesMd(r.sources), charts: r.charts?.length ? r.charts : undefined });
+    (state.chat || (state.chat = [])).push({ role: 'assistant', content: res.reply, charts: r.charts?.length ? r.charts : undefined, recipe: r.recipe || undefined });
     saveCache();
     invalidate();                         // the refresh itself waits until talk mode closes
   } catch (e) {
     const i = (state.chat || []).indexOf(mine);
     if (i >= 0) state.chat.splice(i, 1);
     res = { reply: /took too long/.test(e.message) ? 'Sorry, that took too long. Please try again.' : `Sorry, I couldn't do that. ${e.message}`, actions: [], failed: true, tm };
-  } finally { chatInflight--; }
-  if (look) await look;                   // "Let me look that up." finishes first (never two voices at once)
+  } finally { clearTimeout(fillT); chatInflight--; }
+  if (filler) await filler;               // the short phrase finishes first (never two voices at once)
   if (!talk.on) return;
   if (g !== talk.gen) {
     // the screen was off or the app switched meanwhile: keep the answer for when you're back
@@ -2645,13 +2727,183 @@ function paintChat(loading = false) {
   const msgs = state.chat || [];
   list.innerHTML = (msgs.length ? '' : `<div class="empty"><div class="big">Hi! What's on your mind?</div>
       I know your tasks, calendar and the weather. You can also just tell me things you did.</div>`) +
-    msgs.map((m, i) => `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}${m.kind === 'brief' ? ' brief' : ''}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.role === 'assistant' && !m.typing && m.content ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
+    msgs.map((m, i) => `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}${m.kind === 'brief' ? ' brief' : ''}${m.typing ? ' typing' : ''}${m.charts?.length ? ' has-chart' : ''}" data-i="${i}">${m.typing ? '<span class="spinner"></span> thinking…' : md(m.content)}${(m.charts || []).map((_, j) => `<div class="chart-slot" data-chart="${i}:${j}"></div>`).join('')}${m.recipe?.q ? `<div><button type="button" class="btn small" data-recipe-open="${i}" style="margin-top:8px">📖 ${esc(m.recipe.name || 'Open the recipe')}</button></div>` : ''}${m.role === 'assistant' && !m.typing && m.content ? `<button type="button" class="say" data-say="${i}" aria-label="Read aloud">🔊</button>` : ''}</div>`).join('') +
     `<div class="chips chat-chips">${CHAT_CHIPS.map(c => `<button class="chip" type="button">${esc(c)}</button>`).join('')}</div>`;
   $$('.chat-chips .chip', list).forEach(c => c.onclick = () => sendChat(c.textContent));
   $$('[data-say]', list).forEach(b => b.onclick = () => speak((state.chat || [])[+b.dataset.say]?.content));
+  $$('[data-recipe-open]', list).forEach(b => b.onclick = () => { const m = (state.chat || [])[+b.dataset.recipeOpen]; if (m?.recipe?.q) openRecipe(m.recipe.q); });
   if (isMember()) $$('.chat-chips .chip', list).forEach(c => { if (/email/i.test(c.textContent)) c.remove(); });
   mountCharts(list);
   requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+}
+
+// ================= INSTANT ANSWERS (on the phone, no AI) =================
+// Common questions are answered from what the app already has (today's calendar, tasks, weather, what to bring), and
+// "add milk to the list" / "I did the laundry" are confirmed at once while the save runs in the background.
+// Anything else, or anything unclear, goes to the assistant as before. The turn is still saved in the chat.
+const LOCAL_FILLER = new Set(("what whats is are was on my me the for do does did i i'm have has any anything there tell can you please show " +
+  'going happening look looks like it in a an at of about we our us so hey ok okay um uh just quick check whats up be will gonna').split(' '));
+function localWords(t) {
+  return normSpeech(t).replace(/['’]s\b/g, '').replace(/[^a-z0-9' -]+/g, ' ').split(/\s+/).map(w => w.replace(/^'+|'+$/g, '')).filter(w => w && !LOCAL_FILLER.has(w));
+}
+// every word is one of `words`, and at least one is in `need`
+function localFits(ws, words, need) { return ws.length > 0 && ws.length <= 6 && ws.every(w => words.includes(w)) && ws.some(w => need.includes(w)); }
+// The phone's copy is today's and fresh enough to answer from (otherwise the assistant answers).
+function localFresh() {
+  const t = state.today;
+  return !!(t && t.today === todayStr() && state.updatedAt && Date.now() - state.updatedAt < 3 * 3600 * 1000);
+}
+function localEventsOn(day) {
+  return (state.today?.events || []).filter(e => String(e.start || '').slice(0, 10) === day)
+    .map(e => (e.all_day ? '' : time12(String(e.start).slice(11, 16)) + ' ') + e.title);
+}
+function localDue(maxDays) {
+  return (state.today?.tasks_due || []).map(dueNow).filter(t => t.days_until !== undefined && t.days_until !== null && t.days_until <= maxDays);
+}
+const listText = a => a.length <= 1 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+function localDayAnswer(day, label) {
+  const ev = localEventsOn(day);
+  const due = localDue(dayDiff(todayStr(), day)).filter(t => label !== 'Tomorrow' || t.days_until === 1);
+  const parts = [];
+  parts.push(ev.length ? `${label}: ${ev.join('; ')}.` : `Nothing on the calendar ${label.toLowerCase()}.`);
+  const over = due.filter(t => t.days_until < 0), on = due.filter(t => t.days_until >= 0);
+  if (on.length) parts.push(`To do: ${listText(on.map(t => t.name))}.`);
+  if (over.length && label === 'Today') parts.push(`Overdue: ${listText(over.map(t => t.name))}.`);
+  if (!on.length && !over.length) parts.push(`Nothing due ${label.toLowerCase()}.`);
+  return parts.join(' ');
+}
+function localCarry(tomorrow) {
+  const c = tomorrow ? state.today?.tomorrow_carry : state.today?.carry;
+  if (!c) return null;
+  if (!c.items?.length) return tomorrow ? 'Nothing extra to bring tomorrow.' : 'Nothing extra to bring today.';
+  return (tomorrow ? 'Tomorrow, bring: ' : 'Bring: ') + c.items.map(i => i.text.charAt(0).toLowerCase() + i.text.slice(1) + (i.why ? ` (${i.why})` : '')).join('; ') + '.';
+}
+function localWeather(tomorrow) {
+  const c = tomorrow ? state.today?.tomorrow_carry : state.today?.carry;
+  const w = c?.weather || (tomorrow ? state.today?.tomorrow_weather?.summary : state.today?.weather?.summary);
+  return w ? (tomorrow ? 'Tomorrow: ' : 'Today: ') + w + (/[.!]$/.test(w) ? '' : '.') : null;
+}
+// One task this person can see whose name matches what was said (only when exactly one fits).
+function localTaskByName(said) {
+  const stop = new Set(['the', 'a', 'an', 'my', 'our', 'to', 'of', 'for', 'with', 'and', 'today', 'now', 'just']);
+  const stem = w => { let x = w.replace(/(ing|ed)$/, ''); if (x !== w && /([b-df-hj-np-tv-z])\1$/.test(x)) x = x.slice(0, -1); return x.length > 2 ? x.replace(/(es|s)$/, '') : w; };
+  const words = s => normSpeech(s).replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(w => w.length > 1 && !stop.has(w)).map(stem);
+  const q = words(said);
+  if (!q.length) return null;
+  const hits = (state.tasks || []).filter(t => t.active !== false && t.name).filter(t => {
+    const n = words(t.name);
+    return q.every(w => n.includes(w)) || (n.length && n.every(w => q.includes(w)));
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+const LOCAL_TIME_WORDS = /\b(yesterday|last|ago|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|evening|night|at \d|on the)\b|昨天|前天|上周/;
+/**
+ * Returns {reply, run?, label?} when the phone can answer this itself, else null.
+ * run() does the save (a promise); label is the line shown with ✓.
+ */
+function localTurn(text, { canWrite = true } = {}) {
+  if (!isConfigured() || !localFresh()) return null;
+  const n = normSpeech(text).replace(/\bto do\b/g, 'todo');
+  if (!n || n.length > 120) return null;
+  // ---- simple saves ----
+  if (canWrite) {
+    let m = /^(?:please |can you |could you )?(?:add|put) (.+?) (?:to|on) (?:the |my |our )?(?:grocery|groceries|shopping) ?(?:list)?(?: please)?$/.exec(n) ||
+      /^(?:把)?(.+?)(?:加到|加入|放到|放进)(?:购物|买菜)(?:清单|单)$/.exec(n);
+    if (m) {
+      const items = m[1].split(/\s*(?:,|\band\b|、|和|跟)\s*/).map(x => x.replace(/^(?:some|a|an|the)\s+/, '').trim()).filter(Boolean).slice(0, 12);
+      if (items.length) {
+        return { reply: `Added ${listText(items)} to the grocery list.`, label: '🛒 Added to the list: ' + items.join(', '),
+          run: () => api('grocery.set', { add: items }).then(g => { if (g && Array.isArray(g.items)) setGrocery(g); }) };
+      }
+    }
+    m = !LOCAL_TIME_WORDS.test(n) && (/^(?:i |we )?(?:just )?(?:finished|did|completed|have done|done with|took care of) (?:the |my )?(.+?)(?: today)?$/.exec(n) ||
+      /^(?:i |we )?(?:just )?([a-z]+ed (?:the |my |our )?.+?)(?: today)?$/.exec(n) ||
+      /^mark (?:the )?(.+?) (?:as )?(?:done|complete|finished)$/.exec(n) || /^(?:the )?(.+?) (?:is )?(?:done|finished)(?: today)?$/.exec(n));
+    if (m) {
+      const t = localTaskByName(m[1]);
+      if (t) {
+        return { reply: `Marked "${t.name}" done.`, label: `✓ Done: ${t.name}`,
+          run: () => api('tasks.done', { id: t.id }).then(r => { patchTask(r); return r && r.undo; }) };
+      }
+    }
+  }
+  // ---- questions ----
+  const ws = localWords(n);
+  const tmr = ws.includes('tomorrow') || /明天/.test(n);
+  if (localFits(ws, ['bring', 'wear', 'take', 'need', 'should', 'carry', 'jacket', 'umbrella', 'coat', 'today', 'tomorrow', 'to', 'with', 'outside'], ['bring', 'wear', 'carry', 'jacket', 'umbrella', 'coat']) ||
+      /^(?:今天|明天)?(?:要|需要|应该)?(?:带|穿)(?:什么|啥)/.test(n)) {
+    const a = localCarry(tmr); return a ? { reply: a } : null;
+  }
+  if (localFits(ws, ['weather', 'forecast', 'today', 'tomorrow', 'outside', 'how'], ['weather', 'forecast']) || /^(?:今天|明天)?天气(?:怎么样|如何)?$/.test(n)) {
+    const a = localWeather(tmr); return a ? { reply: a } : null;
+  }
+  if (localFits(ws, ['grocery', 'groceries', 'shopping', 'list', 'buy', 'need', 'to', 'store', 'still'], ['grocery', 'groceries', 'shopping']) || /^(?:购物|买菜)清单(?:上)?(?:有什么|有啥)?$/.test(n)) {
+    return { reply: '', fetch: () => api('grocery.get').then(g => {
+      const left = (g.items || []).filter(i => !i.status).map(i => i.name);
+      return left.length ? `On the list (${left.length}): ${listText(left.slice(0, 25))}${left.length > 25 ? ', and more' : ''}.` : 'The grocery list is empty.';
+    }) };
+  }
+  if (localFits(ws, ['due', 'todo', 'to', 'tasks', 'task', 'chores', 'chore', 'overdue', 'still', 'left', 'need', 'today', 'this', 'week', 'list'], ['due', 'todo', 'tasks', 'task', 'chores', 'chore', 'overdue'])) {
+    const due = localDue(ws.includes('week') ? 7 : 0);
+    if (!due.length) return { reply: ws.includes('week') ? 'Nothing due this week.' : 'Nothing due today.' };
+    return { reply: `Due: ${listText(due.map(t => t.name + (t.days_until < 0 ? ' (overdue)' : t.days_until === 0 ? '' : ' (' + rel(t.next_due) + ')')))}.` };
+  }
+  if (localFits(ws, ['tomorrow', 'schedule', 'calendar', 'plan', 'plans', 'agenda', 'events'], ['tomorrow']) || /^明天(?:有什么|有啥)?(?:安排|事|事情|日程)?$/.test(n)) {
+    const d = new Date(); d.setDate(d.getDate() + 1);
+    return { reply: localDayAnswer(todayStr(d), 'Tomorrow') };
+  }
+  if (localFits(ws, ['today', 'day', 'schedule', 'calendar', 'plan', 'plans', 'agenda', 'events', 'morning'], ['today', 'day', 'schedule', 'calendar', 'agenda', 'plans']) ||
+      /^(?:今天|今日)(?:有什么|有啥)?(?:安排|事|事情|日程)?$/.test(n)) {
+    return { reply: localDayAnswer(todayStr(), 'Today') };
+  }
+  return null;
+}
+// Saves a turn the phone answered itself, so it stays in the chat and the assistant knows about it.
+function localLog(message, reply) { if (reply) api('chat.log', { message, reply }).catch(() => {}); }
+
+// Saves are only made on the phone for the signed-in grown-up (a child, or someone else speaking, goes to the assistant).
+function localCanWrite(text) {
+  if (speakerFor(text)) return false;
+  const me = people().find(p => p.id === myPersonId());
+  return !(me && me.kind === 'child');
+}
+// Talk mode: says the phone's answer right away; a save runs meanwhile and is reported if it fails. false = not handled.
+async function talkLocal(text, lt, g) {
+  let reply = lt.reply;
+  if (lt.fetch) { setTalk('thinking'); try { reply = await lt.fetch(); } catch { return false; } }
+  if (!talk.on || g !== talk.gen) return true;
+  markUse();
+  const runP = lt.run ? lt.run().then(() => null, e => e) : null;
+  state.chat = state.chat || [];
+  const ans = { role: 'assistant', content: reply };
+  state.chat.push({ role: 'user', content: text }, ans);
+  saveCache();
+  talkLine('talkReply', md(reply));
+  talkLine('talkDone', lt.label ? `<div>${esc(lt.label)}</div>` : '');
+  const r = await talkSay(reply);
+  let err = null;
+  if (runP) err = await Promise.race([runP, new Promise(res => setTimeout(() => res(null), 8000))]);
+  if (err) {
+    ans.content = `⚠️ That didn't save: ${err.message}`; saveCache();
+    if (r !== 'stopped' && talk.on && g === talk.gen) await talkSay(`Sorry, that didn't save. ${err.message}`, { phone: true });
+  } else localLog(text, reply);
+  if (r === 'stopped' || !talk.on || g !== talk.gen) return true;
+  talkListen();
+  return true;
+}
+// Chat and Home box: the answer text (a save runs in the background; a failure is added to the chat). null = not handled.
+async function chatLocal(text, lt, onFail) {
+  let reply = lt.reply;
+  if (lt.fetch) { try { reply = await lt.fetch(); } catch { return null; } }
+  if (lt.run) {
+    lt.run().then(undo => { localLog(text, reply); onFail?.(null, undo); }, e => {
+      (state.chat || (state.chat = [])).push({ role: 'assistant', content: `⚠️ That didn't save: ${e.message}` });
+      saveCache();
+      if (location.hash === '#chat') paintChat();
+      onFail?.(e);
+    });
+  } else localLog(text, reply);
+  return reply;
 }
 
 let chatBusy = false;
@@ -2671,12 +2923,18 @@ async function sendChat(text) {
   let ans;
   try {
     const shared = sh ? { title: sh.title || '', text: (sh.text || '').slice(0, 6000), url: sh.url || '', image: sh.image ? { data: sh.image.data, mime: sh.image.mime } : null } : undefined;
-    tm.sent = Date.now();
-    const r = await api('chat.send', { message: text, shared, speaker: speakerFor(text) }, { timeoutMs: 120000 });
-    tm.reply = Date.now();
-    noteTiming(r.timing); notePhoneTiming('chat', tm);
-    ans = { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined };
-    invalidate((r.actions || []).length ? 1500 : 12000);   // the assistant may have changed tasks, meals or the calendar
+    const lt = sh ? null : localTurn(text, { canWrite: localCanWrite(text) });
+    const quick = lt ? await chatLocal(text, lt) : null;
+    if (quick !== null) ans = { role: 'assistant', content: quick };
+    else {
+      tm.sent = Date.now();
+      const r = await api('chat.send', { message: text, shared, speaker: speakerFor(text) }, { timeoutMs: 120000 });
+      tm.reply = Date.now();
+      noteTiming(r.timing); notePhoneTiming('chat', tm);
+      ans = { role: 'assistant', content: r.reply, charts: r.charts?.length ? r.charts : undefined, recipe: r.recipe || undefined };
+      invalidate((r.actions || []).length ? 1500 : 12000);   // the assistant may have changed tasks, meals or the calendar
+      if (r.recipe?.q && location.hash === '#chat') openRecipe(r.recipe.q);
+    }
   } catch (e) {
     ans = { role: 'assistant', content: '⚠️ ' + e.message };
   } finally { chatBusy = false; chatInflight--; }
@@ -2814,9 +3072,11 @@ function paintMemberSettings() {
       <button class="btn small ghost" id="sSignOut" style="margin-top:10px">Sign out of this phone</button>
     </div>
     ${voiceCardHtml()}
+    ${memoryCardHtml()}
     ${notifyCardHtml(false)}
     <div class="spacer"></div>`;
   bindVoiceCard();
+  bindMemoryCard();
   foldCards($('#serverSettings'), ['You']);
   bindNotifyCard();
   $('#sSignOut').onclick = () => {
@@ -2824,6 +3084,49 @@ function paintMemberSettings() {
     setCfg({}); forgetLocalData();
     location.hash = '#settings'; route();
   };
+}
+
+// Settings card: what the assistant always keeps in mind (shared with the family unless "only me"). Tap a fact to edit it.
+function memoryCardHtml() {
+  return `<div class="card" id="memCard">
+    <h2>What ${esc(assistantName())} remembers</h2>
+    <div class="muted small">Lasting facts ${esc(assistantName())} keeps in mind in every chat, like "Sam doesn't like mushrooms" or "school pickup is 3:15". Say "remember…" in the chat, or add one here. Never passwords or card numbers.</div>
+    <div id="memRows" class="watch-rows"><div class="muted small">Loading…</div></div>
+    <div class="watch-add"><input type="text" id="memNew" maxlength="300" placeholder="e.g. Alex is allergic to peanuts" autocomplete="off"><button type="button" class="btn small" id="memAdd">Add</button></div>
+    <label class="row small" style="gap:6px;margin-top:6px"><input type="checkbox" id="memPriv"> Only me</label>
+  </div>`;
+}
+function bindMemoryCard() {
+  const rows = $('#memRows'); if (!rows) return;
+  let list = [];
+  const paint = () => {
+    rows.innerHTML = list.length ? list.map((m, i) => `<div class="watch-row mem-row"><button type="button" class="mem-t" data-ed="${i}">${esc(m.text)}${m.about ? ` <span class="cal-tag">${esc(m.about)}</span>` : ''}${m.private ? ' <span class="cal-tag">only me</span>' : ''}</button>
+      <button type="button" class="x" data-rm="${i}" aria-label="Forget ${esc(m.text)}">✕</button></div>`).join('')
+      : '<div class="muted small">Nothing yet.</div>';
+    $$('[data-rm]', rows).forEach(b => b.onclick = () => {
+      const m = list[+b.dataset.rm];
+      if (!confirm(`Forget "${m.text}"?`)) return;
+      api('memory.delete', { id: m.id }).then(() => { list = list.filter(x => x.id !== m.id); paint(); }).catch(fail);
+    });
+    $$('[data-ed]', rows).forEach(b => b.onclick = () => {
+      const m = list[+b.dataset.ed];
+      const t = prompt('Edit (empty = keep as is):', m.text);
+      if (t === null || !t.trim() || t.trim() === m.text) return;
+      api('memory.save', { id: m.id, text: t.trim() }).then(r => { list = list.map(x => (x.id === m.id ? { ...x, ...r } : x)); paint(); }).catch(fail);
+    });
+  };
+  api('memory.list').then(l => { list = Array.isArray(l) ? l : []; paint(); }).catch(() => { rows.innerHTML = '<div class="muted small">Could not load. Try again later.</div>'; });
+  const add = () => {
+    const inp = $('#memNew'), t = inp.value.trim();
+    if (!t) return;
+    busy($('#memAdd'), async () => {
+      const r = await api('memory.save', { text: t, private: $('#memPriv').checked });
+      if (!list.some(x => x.id === r.id)) list.unshift({ ...r, mine: true });
+      inp.value = ''; paint();
+    }).catch(fail);
+  };
+  $('#memAdd').onclick = add;
+  $('#memNew').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } });
 }
 
 // Notifications always go by Telegram. The owner sets up the bot once; everyone links their own Telegram:
@@ -2935,6 +3238,7 @@ function paintServerSettings() {
         <label class="field"><span>Evening check-in</span><select id="sEve">${hourOpts(s.evening_hour, true)}</select></label>
       </div>`)}
     ${voiceCardHtml()}
+    ${memoryCardHtml()}
     <div class="card">
       <h2>Assistant</h2>
       <label class="field"><span>Assistant's name</span><input type="text" id="sAsstName" maxlength="20" value="${esc(s.assistant_name || 'Bella')}"></label>
@@ -3022,6 +3326,7 @@ function paintServerSettings() {
   paintFamily();
   $('#sInvite').onclick = openInvite;
   bindVoiceCard();
+  bindMemoryCard();
   foldCards($('#serverSettings'));
 
   // App and backend versions, and how long the last reply took (always shown, even without usage numbers)
@@ -3032,10 +3337,8 @@ function paintServerSettings() {
     paintVer();
     const el = $('#sUsage'); if (!el) return;
     const rows = Object.entries(u.calls || {});
-    const sr = u.search;
     el.innerHTML = `In use: <b>${u.provider === 'claude' ? 'Claude' : 'Gemini'}</b> · <b>${esc(u.models?.main || '?')}</b> (everyday), <b>${esc(u.models?.smart || '?')}</b> (food ideas).<br>` +
       (rows.length ? 'Requests today: ' + rows.map(([m, n]) => `${esc(m)} ${Number(n) || 0}`).join(' · ') : 'No AI requests yet today.') +
-      (sr ? `<br>Web searches today: ${Number(sr.today) || 0} of ${Number(sr.cap_day) || 0}${sr.month ? ` (${Number(sr.month) || 0} this month)` : ''}${sr.last_error ? `<br>Last web search problem: ${esc(sr.last_error)}` : ''}` : '') +
       (u.cost_month ? `<br>Claude this month: about <b>$${(Number(u.cost_month.usd) || 0).toFixed(2)}</b> (${Math.round((Number(u.cost_month.tokens) || 0) / 1000)}k tokens, estimate). Your real bill is at console.anthropic.com.` : '<br>Your exact free limits are listed in Google AI Studio.');
   }).catch(() => { $('#sUsage') && ($('#sUsage').textContent = ''); });
 
