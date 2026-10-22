@@ -112,6 +112,8 @@ Choose in the app under **Settings → Notifications**.
 
 Test with **Settings → Send test notification**. If it arrives silently, enable sound for the app in Android **Settings → Notifications**.
 
+The morning brief is deleted from the Telegram chat 30 minutes after it's sent (it stays on Home in the app). Otherwise Android shows the unread brief in the same notification as later reminders and the reminder gets cut off.
+
 ### 6. Optional: Bella's natural voice (Google Cloud Chirp)
 
 Without this, Bella reads with the phone's own voice. With it, she uses Google's natural "Chirp 3: HD" voices. **The first 1 million characters each month are free** (a spoken reply is about 150–250 characters, so roughly 4,000+ replies). Homebase counts what it uses and switches to the phone voice at 900,000, so it stays inside the free amount. Google asks for a billing account (a card) even for the free part.
