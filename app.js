@@ -224,6 +224,25 @@ function dueNow(t) {
   if (!isFinite(d)) return t;
   return { ...t, days_until: d, state: d < 0 ? 'overdue' : d === 0 ? 'today' : d <= 2 ? 'soon' : 'later' };
 }
+// Same order as the backend: day; no reminder time first; reminder time; time in the title (none first); name.
+function titleMinutes(name) {
+  const s = String(name || ''); let m;
+  if ((m = /(?:^|[^\d:.])(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b/i.exec(s)) && +m[1] >= 1 && +m[1] <= 12)
+    return (+m[1] % 12) * 60 + (m[2] ? +m[2] : 0) + (m[3].toLowerCase() === 'p' ? 720 : 0);
+  if ((m = /(?:^|[^\d:.])([01]?\d|2[0-3]):([0-5]\d)(?!\d)/.exec(s))) return +m[1] * 60 + +m[2];
+  return /\bnoon\b/i.test(s) ? 720 : null;
+}
+function taskOrder(a, b) {
+  const x = a.days_until ?? 99999, y = b.days_until ?? 99999;
+  if (x !== y) return x - y;
+  const ta = a.remind_time || '', tb = b.remind_time || '';
+  if (!ta !== !tb) return ta ? 1 : -1;
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  const ma = titleMinutes(a.name), mb = titleMinutes(b.name);
+  if ((ma === null) !== (mb === null)) return ma === null ? -1 : 1;
+  if (ma !== mb) return ma - mb;
+  return String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase());
+}
 // Applies a task change right away, so lists don't wait for the refresh.
 function patchTask(t, removed) {
   if (!t) return;
@@ -234,8 +253,8 @@ function patchTask(t, removed) {
     const due = !removed && t.active !== false && now.days_until !== null && now.days_until !== undefined && now.days_until <= 2;
     const list = state.today.tasks_due.filter(x => x.id !== t.id);
     if (due) {
-      const i = state.today.tasks_due.findIndex(x => x.id === t.id);
-      if (i >= 0) list.splice(i, 0, t); else { list.push(t); list.sort((a, b) => (dueNow(a).days_until ?? 99) - (dueNow(b).days_until ?? 99)); }
+      list.push(now);
+      list.sort((a, b) => taskOrder(dueNow(a), dueNow(b)));
     }
     state.today.tasks_due = list;
   }
@@ -384,7 +403,7 @@ function paintToday() {
     return;
   }
   const wx = t.weather || {};
-  const due = (t.tasks_due || []).map(dueNow);
+  const due = (t.tasks_due || []).map(dueNow).sort(taskOrder);
   const rest = `
     ${weatherCard(wx, t)}
     ${t.suggestions?.length ? suggestionsCard(t.suggestions) : ''}
@@ -533,7 +552,7 @@ async function renderTasks() {
 }
 function paintTasks() {
   if (!state.tasks) return paintNoData();
-  const all = state.tasks.map(dueNow);
+  const all = state.tasks.map(dueNow).sort(taskOrder);
   // The app shows only what's close: overdue and today, tomorrow, and the next 7 days (recurring ones too, when they
   // come due). Everything further out stays in the backend: Bella knows it all ("what's coming up next month?").
   const by = (lo, hi) => all.filter(t => t.days_until !== null && t.days_until !== undefined && t.days_until >= lo && t.days_until <= hi);
