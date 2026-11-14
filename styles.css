@@ -140,6 +140,8 @@ textarea { resize: vertical; min-height: 80px; }
   width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--line); background: transparent; flex: none;
   display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: transparent;
 }
+/* press and hold = more outcomes */
+.check { -webkit-touch-callout: none; user-select: none; touch-action: manipulation; }
 .check:active, .check.done { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .quicklog { display: flex; gap: 8px; margin: 0 0 14px; }

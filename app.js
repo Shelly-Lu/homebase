@@ -528,13 +528,51 @@ function remindText(t) {
 }
 function taskRow(t) {
   return `<div class="list-row" data-task="${esc(t.id)}">
-    <button class="check" data-done="${esc(t.id)}" aria-label="Mark done: ${esc(t.name)}">${CHECK}</button>
+    <button class="check" data-done="${esc(t.id)}" aria-label="Mark done: ${esc(t.name)}. Press and hold for missed or move">${CHECK}</button>
     <div class="grow tap" data-edit="${esc(t.id)}"><div class="title">${t.private ? '<span class="lock" title="Only you can see this">🔒</span> ' : ''}${esc(t.name)}</div><div class="meta">${esc(freqText(t))}${t.remind_time ? ` · <span class="remind-tag">${esc(remindText(t))}</span>` : ''}</div></div>
     ${GROCERY_TASK_RE.test(t.name) ? `<button type="button" class="btn small groc-task" data-groc="1" aria-label="Plan meals and shopping list">🛒 Plan</button>` : ''}
     ${dueLabel(t)}
   </div>`;
 }
+// Press and hold the check box (or use the task's edit sheet) for the other outcomes: missed, or missed and moved.
+function openTaskOutcome(t, after) {
+  const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString('en-CA'); })();
+  openModal(`<h3>${esc(t.name)}</h3>
+    <div class="muted small" style="margin-bottom:10px">What happened? This goes in the log exactly as you pick.</div>
+    <label class="field"><span>Note (optional)</span><input type="text" id="oNote" maxlength="200" placeholder="e.g. rained all day"></label>
+    <div class="btn-row" style="flex-direction:column;align-items:stretch;gap:8px">
+      <button class="btn primary" data-o="done">✓ Completed</button>
+      <button class="btn" data-o="missed">✗ Missed${t.interval_days ? ' (next one stays on schedule)' : ' (closes it)'}</button>
+    </div>
+    <div class="section-title" style="margin-top:14px">Missed, move to another day</div>
+    <div class="btn-row" style="gap:8px"><input type="date" id="oDate" value="${tomorrow}" min="${todayStr()}" style="flex:1"><button class="btn" data-o="moved">Move</button></div>`);
+  $$('#modalBody [data-o]').forEach(b => b.addEventListener('click', e => busy(e.currentTarget, async () => {
+    const outcome = b.dataset.o, note = $('#oNote').value.trim();
+    if (outcome === 'moved' && !$('#oDate').value) return toast('Pick a day.', true);
+    const r = await api('tasks.done', { id: t.id, outcome, note, ...(outcome === 'moved' ? { move_to: $('#oDate').value } : {}) });
+    closeModal();
+    toast(outcome === 'missed' ? (r.active === false ? `Missed: ${r.name}` : `Missed. Next: ${rel(r.next_due)}`)
+      : outcome === 'moved' ? `Moved to ${niceDate(r.next_due)}` : (r.active === false ? `Done: ${r.name}` : `Done. Next: ${rel(r.next_due)}`));
+    patchTask(r, r.active === false);
+    after?.();
+  }).catch(fail)));
+}
 function bindTaskRows(root, after) {
+  $$('[data-done]', root).forEach(b => {
+    let timer = null, held = false;
+    const stop = () => { clearTimeout(timer); timer = null; };
+    b.addEventListener('pointerdown', () => {
+      held = false; stop();
+      timer = setTimeout(() => {
+        held = true;
+        const t = (state.tasks || []).find(x => x.id === b.dataset.done) || (state.today?.tasks_due || []).find(x => x.id === b.dataset.done);
+        if (t) { try { navigator.vibrate?.(15); } catch { /* fine */ } openTaskOutcome(t, after); }
+      }, 500);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('click', e => { if (held) { held = false; e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+  });
   $$('[data-done]', root).forEach(b => b.addEventListener('click', async () => {
     b.classList.add('done'); b.disabled = true;
     try {
@@ -655,7 +693,7 @@ function openTaskEditor(t, after) {
   if (isNew) setTimeout(() => $('#tName')?.focus(), 50);
 
   if (!isNew) api('tasks.history', { id: t.id, limit: 10 }).then(h => {
-    if (alive() && $('#tHist')) ($('#tHist').innerHTML = h.length ? h.map(x => `<div class="hist">✓ ${esc(niceDate(x.date_done))}${x.note && x.note !== 'initial' ? ' · ' + esc(x.note) : ''}</div>`).join('') : 'Not done yet.');
+    if (alive() && $('#tHist')) ($('#tHist').innerHTML = h.length ? h.map(x => `<div class="hist">${x.outcome === 'missed' ? '✗ Missed' : x.outcome === 'moved' ? '↪ Moved to ' + esc(niceDate(x.moved_to)) + ' ·' : '✓'} ${esc(niceDate(x.date_done))}${x.note && x.note !== 'initial' ? ' · ' + esc(x.note) : ''}</div>`).join('') : 'Not done yet.');
   }).catch(() => {});
 
   $('#tSave').onclick = e => {
