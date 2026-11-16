@@ -11,7 +11,7 @@ export function isConfigured() { const c = getCfg(); return !!(c.url && c.token)
 // Actions that only read. Everything else changes data and carries a req_id, so a repeat of the same request
 // (after a dropped connection or a timeout) is answered from the backend's memory instead of being done twice.
 const READS = new Set(['ping', 'boot', 'today', 'tasks.list', 'tasks.history', 'journal.list', 'records.search', 'meals.list',
-  'meals.analyze', 'meals.recommend', 'photos.get', 'taste.deck', 'taste.setup', 'recipe.get', 'grocery.plan', 'grocery.get', 'shop.get',
+  'meals.analyze', 'meals.recommend', 'photos.get', 'taste.deck', 'taste.setup', 'recipe.get', 'recipe.find', 'grocery.plan', 'grocery.get', 'shop.get',
   'chat.history', 'voice.speak', 'voice.status', 'suggestions.list', 'settings.get', 'calendars.list', 'usage',
   'telegram.status', 'users.list']);
 export const isWrite = action => !READS.has(action);

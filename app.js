@@ -530,7 +530,7 @@ function taskRow(t) {
   return `<div class="list-row" data-task="${esc(t.id)}">
     <button class="check" data-done="${esc(t.id)}" aria-label="Mark done: ${esc(t.name)}. Press and hold for missed or move">${CHECK}</button>
     <div class="grow tap" data-edit="${esc(t.id)}"><div class="title">${t.private ? '<span class="lock" title="Only you can see this">🔒</span> ' : ''}${esc(t.name)}</div><div class="meta">${esc(freqText(t))}${t.remind_time ? ` · <span class="remind-tag">${esc(remindText(t))}</span>` : ''}</div></div>
-    ${GROCERY_TASK_RE.test(t.name) ? `<button type="button" class="btn small groc-task" data-groc="1" aria-label="Plan meals and shopping list">🛒 Plan</button>` : ''}
+    ${GROCERY_TASK_RE.test(t.name) ? `<button type="button" class="btn small groc-task" data-groc="1" aria-label="Open the shopping list">🛒 List</button>` : ''}
     ${dueLabel(t)}
   </div>`;
 }
@@ -582,7 +582,7 @@ function bindTaskRows(root, after) {
       after?.();
     } catch (e) { b.classList.remove('done'); b.disabled = false; fail(e); }
   }));
-  $$('[data-groc]', root).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); state.grocery?.total ? openGroceryList() : openGroceryPlanner(); }));
+  $$('[data-groc]', root).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); location.hash = '#shop'; }));
   $$('[data-edit]', root).forEach(el => el.addEventListener('click', async () => {
     let t = (state.tasks || []).find(x => x.id === el.dataset.edit) || (state.today?.tasks_due || []).find(x => x.id === el.dataset.edit);
     openTaskEditor(t, after);
@@ -1034,7 +1034,11 @@ function paintFood() {
         ? `<button type="button" class="taste-cta" id="fTaste"><span class="grow"><b>New here? Take the taste quiz</b><span class="muted small">Pick your cuisines, then rate 30 dish photos (about a minute) so ideas fit from day one.</span></span><span aria-hidden="true">›</span></button>`
         : `<button type="button" class="btn small ghost" id="fTaste" style="margin-top:8px">Taste quiz · ${state.taste[myPersonId()]} rated</button>`}
     </div>
-    ${groceryCardHtml()}
+    <form class="card food-find" id="fFindF">
+      <div class="fh-q">Want to cook something?</div>
+      <div class="muted small">Search a dish for its recipe. Add the ingredients to your Shop list from there.</div>
+      <div class="groc-add" style="margin-top:10px"><input type="text" id="fFind" placeholder="e.g. mapo tofu" maxlength="80" autocomplete="off" enterkeyhint="search"><button class="btn small primary">Search</button></div>
+    </form>
     ${planned.length ? `<div class="section-title">Up next<span>${planned.length}</span></div><div class="card meal-list up-next">${planned.map(m => `
       <div class="next-row" data-next="${esc(m.id)}">
         <span class="idea-i">${m.source === 'homemade' ? '🏠' : m.source === 'takeout' ? '🥡' : '🍽️'}</span>
@@ -1050,7 +1054,7 @@ function paintFood() {
     ${list.length > shown.length ? `<button class="btn ghost block" id="fMore">Show earlier meals</button>` : ''}
     <div class="spacer"></div>`;
   $('#fGuess').onclick = () => openGuess();
-  bindGroceryCard();
+  $('#fFindF').onsubmit = e => { e.preventDefault(); const q = $('#fFind').value.trim(); if (q) openRecipe({ find: q }); };
   $('#fTaste').onclick = () => openTasteQuiz(myPersonId());
   $$('#fFilter [data-f]').forEach(b => b.onclick = () => { state.ffilter = b.dataset.f; paintFood(); });
   $('#fMore')?.addEventListener('click', () => { state.fshow += 60; paintFood(); });
@@ -1080,159 +1084,8 @@ function upsertMeal(m, removed) {
 }
 
 // ================= GROCERIES =================
-// Plan meals for a shopping trip → one shared shopping list from their recipes → scratch what you already have.
-const GROC_NEEDS = ['Quick & easy', 'Healthy', 'Kid-friendly', 'Budget', 'Vegetarian', 'Something new'];
+// (The old meal-planner grocery list is gone: the Shop tab has the list. Tasks that sound like shopping keep a shortcut to it.)
 const GROCERY_TASK_RE = /grocer|supermarket|costco|trader joe|whole foods|h ?mart|aldi|wegmans|safeway|kroger|food shopping|shopping list|买菜|買菜|超市/i;
-const SECTION_ICON = { produce: '🥬', 'meat & seafood': '🍗', 'dairy & eggs': '🥚', bakery: '🍞', pantry: '🥫', frozen: '🧊', drinks: '🧃', household: '🧻', other: '🛒' };
-
-function groceryCardHtml() {
-  const g = state.grocery;
-  const has = g && g.total;
-  return `<div class="card groc-card">
-    <div class="groc-top"><span class="groc-i" aria-hidden="true">🛒</span>
-      <span class="grow"><b>Groceries</b><span class="muted small">${has ? `${g.left} to buy${g.total - g.left ? ` · ${g.total - g.left} scratched` : ''}${g.meals ? ` · ${g.meals} meals` : ''}` : 'Plan meals for your next shop and get one list.'}</span></span></div>
-    <div class="btn-row" style="margin-top:10px">${has ? '<button class="btn small primary" id="gOpen">Open list</button><button class="btn small" id="gPlan">Plan new meals</button>' : '<button class="btn small primary" id="gPlan">Plan meals & list</button>'}</div>
-  </div>`;
-}
-function bindGroceryCard() {
-  $('#gPlan')?.addEventListener('click', () => openGroceryPlanner());
-  $('#gOpen')?.addEventListener('click', () => openGroceryList());
-}
-function setGrocery(g) {
-  state.grocery = { left: g.items.filter(i => !i.status).length, total: g.items.length, meals: g.meals.length, created: g.created };
-  saveCache();
-  if (currentTab() === 'food') pendingRepaint = true;   // the Groceries card catches up when the list closes
-}
-
-function openGroceryPlanner() {
-  let count = 5;
-  const needs = new Set();
-  openModal(`<h3>🛒 Plan meals</h3>
-    <div class="field"><span>How many meals are we shopping for?</span>
-      <div class="fchips" id="gCount">${[3, 4, 5, 7, 10].map(n => `<button type="button" data-n="${n}" class="${n === count ? 'on' : ''}">${n}</button>`).join('')}</div></div>
-    <div class="field"><span>Anything special? <span class="muted">(optional)</span></span>
-      <div class="fchips" id="gNeeds">${GROC_NEEDS.map(x => `<button type="button" data-x="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>
-    <label class="field"><span>Note <span class="muted">(optional)</span></span><input type="text" id="gNote" maxlength="200" placeholder="e.g. we have chicken and rice; one fish night"></label>
-    <button class="btn primary block" id="gGo">Suggest meals</button>`);
-  $$('#gCount [data-n]').forEach(b => b.onclick = () => { count = +b.dataset.n; $$('#gCount [data-n]').forEach(x => x.classList.toggle('on', x === b)); });
-  $$('#gNeeds [data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; needs.has(x) ? needs.delete(x) : needs.add(x); b.classList.toggle('on', needs.has(x)); });
-  $('#gGo').onclick = () => runGroceryPlan({ count, needs: [...needs], note: $('#gNote').value.trim() });
-}
-
-async function runGroceryPlan(q) {
-  const body = openModal(`<h3>🛒 Plan meals</h3><div class="guess-wait"><span class="spinner"></span><div class="muted small">Picking ${q.count} meals you'll like…</div></div>`);
-  const alive = dialogAlive();
-  let plan;
-  try { plan = await api('grocery.plan', q, { timeoutMs: 150000 }); }
-  catch (e) { if (alive()) closeModal(); return fail(e); }
-  if (!alive()) return;
-  let meals = plan.meals || [];
-  const paint = () => {
-    body.innerHTML = `<h3>🛒 ${meals.length} meal${meals.length === 1 ? '' : 's'}</h3>
-      ${plan.intro ? `<div class="muted small" style="margin-bottom:10px">${esc(plan.intro)}</div>` : ''}
-      <div class="plan-list">${meals.map((m, i) => `<div class="plan-row">
-        ${m.photo_url ? `<img class="plan-ph" src="${esc(m.photo_url)}" alt="">` : '<span class="plan-ph plan-ph-i" aria-hidden="true">🍲</span>'}
-        <div class="grow"><b>${esc(m.title)}</b><div class="muted small">${esc([m.time, m.cuisine].filter(Boolean).join(' · '))}</div>
-          ${m.why ? `<div class="small">${esc(m.why)}</div>` : ''}
-          <div class="btn-row plan-acts"><button type="button" class="btn small ghost" data-rcp="${i}">📖 Recipe</button><button type="button" class="btn small ghost" data-swap="${i}">↻ Swap</button><button type="button" class="btn small ghost" data-rm="${i}" aria-label="Remove ${esc(m.title)}">✕</button></div></div>
-      </div>`).join('')}</div>
-      <button class="btn primary block" id="gBuild" ${meals.length ? '' : 'disabled'}>Make shopping list</button>
-      <div class="muted small" style="margin-top:6px;text-align:center">The meals also go to “Up next”, so you can tick them off as you cook.</div>`;
-    $$('[data-rcp]', body).forEach(b => b.onclick = () => { const m = meals[+b.dataset.rcp]; openRecipe({ title: m.title, cuisine: m.cuisine, ingredients: (m.ingredients || []).map(g => g.item + (g.amount ? ' (' + g.amount + ')' : '')) }); });
-    $$('[data-rm]', body).forEach(b => b.onclick = () => { meals.splice(+b.dataset.rm, 1); paint(); });
-    $$('[data-swap]', body).forEach(b => b.onclick = () => {
-      const old = meals[+b.dataset.swap];   // the list can change while this is on its way: swap that meal, wherever it is now
-      busy(b, async () => {
-        const r = await api('grocery.plan', { count: 1, needs: q.needs, note: q.note, exclude: meals.map(m => m.title) }, { timeoutMs: 120000 });
-        const j = meals.indexOf(old);
-        if (r.meals?.[0] && j >= 0 && alive()) { meals[j] = r.meals[0]; paint(); }
-      }).catch(fail);
-    });
-    $('#gBuild').onclick = e => busy(e.currentTarget, async () => {
-      const g = await api('grocery.build', { meals }, { timeoutMs: 120000 });
-      setGrocery(g); invalidate(1500);
-      if (alive()) openGroceryList(g);
-      toast(`Shopping list ready: ${g.items.length} items. Tap anything you already have.`);
-    }).catch(fail);
-  };
-  paint();
-}
-
-async function openGroceryList(g) {
-  const body = openModal(`<h3>🛒 Shopping list</h3><div class="guess-wait"><span class="spinner"></span></div>`);
-  const alive = dialogAlive();
-  if (!g) {
-    try { g = await api('grocery.get'); } catch (e) { if (alive()) closeModal(); return fail(e); }
-    if (!alive()) return;
-  }
-  setGrocery(g);
-  // What you tick is what you see: taps are sent one item at a time, a moment later (two quick taps = no change),
-  // and replies never undo a tap made after them.
-  const want = new Map();     // item id → status you picked, not yet confirmed
-  const sent = new Map();     // item id → status on its way
-  let flushTimer = null, flushing = false;
-  const take = fresh => {
-    fresh.items.forEach(i => { if (want.has(i.id)) i.status = want.get(i.id); else if (sent.has(i.id)) i.status = sent.get(i.id); });
-    g = fresh; setGrocery(g);
-  };
-  const flush = async () => {
-    if (flushing) return;
-    flushing = true;
-    try {
-      while (want.size) {
-        const [id, status] = want.entries().next().value;
-        want.delete(id); sent.set(id, status);
-        try {
-          const fresh = await api('grocery.set', { id, status });
-          sent.delete(id);
-          take(fresh);
-        } catch (e) {
-          sent.delete(id);
-          if (!want.has(id)) { const it = g.items.find(x => x.id === id); if (it) it.status = status ? '' : 'have'; setGrocery(g); }
-          fail(e);
-        }
-        if (alive()) paint();
-      }
-    } finally { flushing = false; }
-  };
-  const paint = () => {
-    const left = g.items.filter(i => !i.status).length;
-    const sections = [];
-    g.items.forEach(i => { const s = sections.find(x => x.name === i.section); if (s) s.items.push(i); else sections.push({ name: i.section, items: [i] }); });
-    body.innerHTML = `<h3>🛒 Shopping list</h3>
-      <div class="muted small" style="margin:-4px 0 10px">${g.items.length ? `${left} to buy · tap what you already have to scratch it` : 'Empty. Add things below, or plan meals.'}</div>
-      <form class="groc-add" id="gAddF"><input type="text" id="gAdd" placeholder="Add an item (e.g. milk, eggs)" autocomplete="off" maxlength="60"><button class="btn small primary">Add</button></form>
-      ${g.meals.length ? `<div class="groc-meals">${g.meals.map((m, i) => `<button type="button" class="chip" data-mr="${i}">📖 ${esc(m.name)}</button>`).join('')}</div>` : ''}
-      ${sections.map(s => `<div class="section-title" style="margin-left:0">${SECTION_ICON[s.name] || '🛒'} ${esc(s.name)}<span>${s.items.filter(i => !i.status).length}</span></div>
-        <div class="groc-list">${s.items.slice().sort((a, b) => (!!a.status - !!b.status)).map(i => `<button type="button" class="groc-item${i.status ? ' have' : ''}" data-gi="${esc(i.id)}" aria-pressed="${i.status ? 'true' : 'false'}">
-          <span class="groc-box" aria-hidden="true">${i.status ? '✓' : ''}</span>
-          <span class="grow"><span class="groc-name">${esc(i.name)}</span>${i.amount ? ` <span class="muted small">${esc(i.amount)}</span>` : ''}
-            ${i.meals ? `<span class="groc-for muted small">for ${esc(i.meals)}</span>` : ''}</span>
-          ${i.status ? '<span class="muted small">have it</span>' : ''}</button>`).join('')}</div>`).join('')}
-      <div class="btn-row" style="margin-top:14px">${g.items.length ? '<button class="btn small" id="gCopy">Copy list</button>' : ''}<button class="btn small" id="gNew">Plan new meals</button>${g.items.length ? '<button class="btn small ghost" id="gClear">Clear list</button>' : ''}</div>`;
-    $$('[data-gi]', body).forEach(b => b.onclick = () => {
-      const it = g.items.find(x => x.id === b.dataset.gi); if (!it) return;
-      it.status = it.status ? '' : 'have'; want.set(it.id, it.status);
-      paint(); setGrocery(g);
-      clearTimeout(flushTimer); flushTimer = setTimeout(flush, 700);
-    });
-    $$('[data-mr]', body).forEach(b => b.onclick = () => { const m = g.meals[+b.dataset.mr]; const r = m.recipe || {};
-      openRecipe({ title: m.name, cuisine: r.cuisine, ingredients: (r.ingredients || []).map(x => x.item + (x.amount ? ' (' + x.amount + ')' : '')) }); });
-    $('#gAddF').onsubmit = e => {
-      e.preventDefault();
-      const v = $('#gAdd').value.trim(); if (!v) return;
-      busy(e.submitter || $('#gAddF button'), async () => { const fresh = await api('grocery.set', { add: v.split(/\s*,\s*/) }); take(fresh); if (alive()) { paint(); $('#gAdd')?.focus(); } }).catch(fail);
-    };
-    $('#gCopy')?.addEventListener('click', () => {
-      let sec = '';
-      const text = g.items.filter(i => !i.status).map(i => { const h = i.section !== sec ? (sec = i.section, `\n${sec.toUpperCase()}\n`) : ''; return h + '• ' + i.name + (i.amount ? ' (' + i.amount + ')' : ''); }).join('\n').trim();
-      navigator.clipboard?.writeText(text).then(() => toast('Copied. Paste it anywhere.')).catch(() => toast('Copy not allowed here.', true));
-    });
-    $('#gNew').onclick = () => openGroceryPlanner();
-    $('#gClear')?.addEventListener('click', e => { if (!confirm('Clear the whole shopping list?')) return; busy(e.currentTarget, async () => { want.clear(); g = await api('grocery.set', { clear: true }); setGrocery(g); if (alive()) paint(); }).catch(fail); });
-  };
-  paint();
-}
 
 // --- add / edit a meal ---
 // Stage 1 (new meal): food photo, optional receipt, a note, who ate → "Read it" (AI) or fill in by hand.
@@ -1391,19 +1244,22 @@ function mealForm(meal, pre, draft) {
 
 // --- Recipes: from TheMealDB (quiz dishes and matching ideas) or written by the AI for "cook at home" ideas ---
 async function openRecipe(q) {
+  q = { ...q };
   const had = document.getElementById('recipeSheet');
   had?.remove();
   const el = document.createElement('div');
   el.id = 'recipeSheet'; el.className = 'recipe-sheet';
   el.innerHTML = `<div class="recipe-card" role="dialog" aria-modal="true" aria-label="Recipe"><button type="button" class="recipe-x" aria-label="Close">✕</button>
-    <div class="guess-wait"><span class="spinner"></span><div class="muted small">${q.dish_id ? 'Getting the recipe…' : 'Writing a recipe…'}</div></div></div>`;
+    <div class="guess-wait"><span class="spinner"></span><div class="muted small">${q.dish_id ? 'Getting the recipe…' : q.find ? 'Finding a recipe…' : 'Writing a recipe…'}</div></div></div>`;
   document.body.appendChild(el);
   if (!had) pushLayer('hbRecipe');
   const close = () => { if (!el.isConnected) return; el.remove(); popLayer('hbRecipe'); };
   el.addEventListener('click', e => { if (e.target === el || e.target.closest('.recipe-x')) close(); });
   try { $('.recipe-x', el).focus({ preventScroll: true }); } catch { /* fine */ }
   try {
-    const r = await api('recipe.get', q, { timeoutMs: 90000 });
+    let r;
+    if (q.find) { const f = await api('recipe.find', { dish: q.find }, { timeoutMs: 90000 }); q = f.q; r = f.recipe; }
+    else r = await api('recipe.get', q, { timeoutMs: 90000 });
     if (!el.isConnected) return;
     const ing = Array.isArray(r?.ingredients) ? r.ingredients : [], steps = Array.isArray(r?.steps) ? r.steps : [];
     const meta = [r.area, r.category, r.time, r.servings ? `serves ${r.servings}` : ''].filter(Boolean).join(' · ');
@@ -1416,7 +1272,7 @@ async function openRecipe(q) {
       <ol class="recipe-steps">${steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
       ${r.tips ? `<p class="tips">${esc(r.tips)}</p>` : ''}
       <div class="recipe-links">${r.youtube ? `<a href="${esc(r.youtube)}" target="_blank" rel="noopener">▶ Video</a>` : ''}${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">Original recipe</a>` : ''}</div>
-      <div class="btn-row recipe-acts" style="margin:4px 0 10px">${ing.length ? '<button type="button" class="btn small" id="rcList">🛒 Add ingredients to the list</button>' : ''}<button type="button" class="btn small ghost" id="rcPlan">Add to Up next</button></div>
+      <div class="btn-row recipe-acts" style="margin:4px 0 10px">${ing.length ? '<button type="button" class="btn small" id="rcList">🛒 Add ingredients to Shop</button>' : ''}<button type="button" class="btn small ghost" id="rcPlan">Add to Up next</button></div>
       <div id="rcPick" hidden></div>
       <div class="muted tiny" style="text-align:left">${r.source === 'ai' ? 'Written by AI for your household. Double-check allergies and cooking times.' : 'Recipe and photo: <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>'}</div>`;
     const img = $('.recipe-img', el);
@@ -1427,20 +1283,27 @@ async function openRecipe(q) {
 // Recipe card buttons: tick off what you already have, add the rest to the shared list; or plan it under "Up next".
 function bindRecipeActs(el, r, ing, q) {
   const name = r.name || q.title || 'Recipe';
-  $('#rcList', el)?.addEventListener('click', () => {
+  $('#rcList', el)?.addEventListener('click', async () => {
     const pick = $('#rcPick', el);
     pick.hidden = false;
+    if (!state.shop) { try { setShop(await api('shop.get')); } catch { /* the stores list is just a convenience */ } }
+    const stores = (state.shop?.stores || []).slice(0, 8);
+    let store = lsGet('homebase.shopStore', '');
     pick.innerHTML = `<div class="muted small" style="margin-bottom:6px">Untick what you already have:</div>
-      ${ing.map((x, i) => `<label class="row small" style="gap:8px;padding:3px 0"><input type="checkbox" data-ing="${i}" checked> ${esc(x?.item ?? x)}</label>`).join('')}
-      <div class="btn-row" style="margin:8px 0 12px"><button type="button" class="btn small primary" id="rcAdd">Add to the list</button></div>`;
+      ${ing.map((x, i) => `<label class="row small" style="gap:8px;padding:3px 0"><input type="checkbox" data-ing="${i}" checked> ${esc(x?.amount ? x.amount + ' ' : '')}${esc(x?.item ?? x)}</label>`).join('')}
+      <label class="field" style="margin-top:8px"><span>Which store?</span><input type="text" id="rcStore" list="rcStores" value="${esc(store)}" placeholder="Costco, H Mart… (optional)" maxlength="40" autocomplete="off">
+        <datalist id="rcStores">${stores.map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+      ${stores.length ? `<div class="fchips" id="rcChips">${stores.map(x => `<button type="button" data-s="${esc(x)}">${esc(x)}</button>`).join('')}</div>` : ''}
+      <div class="btn-row" style="margin:8px 0 12px"><button type="button" class="btn small primary" id="rcAdd">Add to Shop</button></div>`;
     $('#rcList', el).hidden = true;
+    $$('#rcChips [data-s]', el).forEach(b => b.onclick = () => { $('#rcStore', el).value = b.dataset.s; });
     $('#rcAdd', el).onclick = e => busy(e.currentTarget, async () => {
-      const items = $$('[data-ing]', el).filter(c => c.checked).map(c => String(ing[+c.dataset.ing]?.item ?? ing[+c.dataset.ing] ?? '').slice(0, 60)).filter(Boolean);
+      const items = $$('[data-ing]', el).filter(c => c.checked).map(c => { const x = ing[+c.dataset.ing]; return { name: String(x?.item ?? x ?? '').slice(0, 60), note: String(x?.amount || '').slice(0, 40) }; }).filter(x => x.name);
       if (!items.length) { toast('Nothing ticked.'); return; }
-      const g = await api('grocery.set', { add: items });
-      if (g && Array.isArray(g.items)) setGrocery(g);
-      return items.length;
-    }).then(n => { if (n) pick.innerHTML = `<div class="small" style="margin-bottom:10px">🛒 Added ${n} to the grocery list.</div>`; }, fail);
+      store = $('#rcStore', el).value.trim(); lsSet('homebase.shopStore', store);
+      await shopCall('shop.add', { items, store });
+      return { n: items.length, store };
+    }).then(r => { if (r) pick.innerHTML = `<div class="small" style="margin-bottom:10px">🛒 Added ${r.n} to your Shop list${r.store ? ' (' + esc(r.store) + ')' : ''}.</div>`; }, fail);
   });
   $('#rcPlan', el)?.addEventListener('click', e => { const b = e.currentTarget; busy(b, async () => {
     const saved = await api('meals.save', { name, meal: 'dinner', source: 'homemade', cuisine: r.area || '', ingredients: ing.map(x => String(x?.item ?? x)).slice(0, 15),
@@ -2659,53 +2522,47 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ================= SHOP =================
-// Three views: "To buy" (the active list, by category), "Cart" (trips: a date + a store, with check boxes) and
-// "Catalog" (everything we buy, with how often). Changes show at once on the phone; the server copy replaces ours when
-// nothing else is on its way.
+// Two views: "To buy" (one list per store, with check boxes) and "Catalog" (everything we buy, with how often).
+// Changes show at once on the phone; the server copy replaces ours when nothing else is on its way.
 let shopBusy = 0, shopChain = Promise.resolve();
-const shopSel = new Set();
 function shopCall(action, data) {
   shopBusy++;
   const p = shopChain.then(() => api(action, data));
   shopChain = p.then(() => {}, () => {});
-  return p.then(r => { if (--shopBusy === 0 && r && Array.isArray(r.cart)) setShop(r); return r; },
+  return p.then(r => { if (--shopBusy === 0 && r && Array.isArray(r.catalog)) setShop(r); return r; },
     e => { if (--shopBusy === 0) api('shop.get').then(setShop).catch(() => {}); throw e; });
 }
 function setShop(g) {
-  if (!g || !Array.isArray(g.cart)) return;
+  if (!g || !Array.isArray(g.catalog)) return;
   state.shop = g; state.fetchedAt.shop = Date.now(); saveCache();
-  [...shopSel].forEach(id => { if (!g.catalog.some(i => i.id === id && i.active)) shopSel.delete(id); });
   if (currentTab() === 'shop') repaintIfIdle(); else if (currentTab() === 'today') repaintIfIdle();
 }
-const tripWhen = d => { const n = dayDiff(todayStr(), d); return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : n === -1 ? 'Yesterday' : niceDate(d); };
-const tripName = l => (l.store || 'Shopping');
-function shopTrips(g) {
+const onList = g => (g.catalog || []).filter(i => i.active);
+// The list by store: the store with the most still to buy first, "No store yet" last.
+function shopStores(g) {
   const map = new Map();
-  (g.cart || []).forEach(l => { const k = l.date + '|' + l.store; if (!map.has(k)) map.set(k, { date: l.date, store: l.store, lines: [] }); map.get(k).lines.push(l); });
-  return [...map.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.store < b.store ? -1 : 1));
+  onList(g).forEach(i => { const k = i.store || ''; if (!map.has(k)) map.set(k, []); map.get(k).push(i); });
+  const open = l => l.filter(i => !i.got_on).length;
+  return [...map.entries()].map(([store, items]) => ({ store, items: items.slice().sort((a, b) => (!!a.got_on - !!b.got_on) || String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase())) }))
+    .sort((a, b) => (!a.store - !b.store) || (open(b.items) - open(a.items)) || a.store.localeCompare(b.store));
 }
-const tripOpen = t => t.lines.some(l => !l.done);
-// What the Home screen shows: today's open trips and what may be running low.
+// What the Home screen shows: what is left per store, and what may be running low.
 function shopHome() {
   const g = state.shop;
-  if (g) {
-    const today = todayStr();
-    const trips = shopTrips(g).filter(t => t.date === today && tripOpen(t)).map(t => ({ store: t.store, left: t.lines.filter(l => !l.done).length }));
-    return { due: g.due || [], trips };
-  }
+  if (g) return { due: g.due || [], lists: shopStores(g).map(l => ({ store: l.store, left: l.items.filter(i => !i.got_on).length })).filter(l => l.left > 0) };
   const s = state.today?.shop || {};
-  return { due: s.due || [], trips: (s.trips || []).filter(t => t.left > 0) };
+  return { due: s.due || [], lists: (s.lists || []).filter(t => t.left > 0) };
 }
 function shopHomeCards() {
   const h = shopHome();
-  return (h.trips.length ? `<div class="card" id="shopTodayCard"><h2>Shopping today</h2>${h.trips.map(t => `
-      <button type="button" class="shop-go" data-go="cart"><span class="grow"><b>${esc(t.store || 'Shopping')}</b></span><span class="muted small">${t.left} to get</span></button>`).join('')}</div>` : '') +
+  return (h.lists.length ? `<div class="card" id="shopTodayCard"><h2>Shopping list</h2>${h.lists.map(t => `
+      <button type="button" class="shop-go" data-go="list"><span class="grow"><b>${esc(t.store || 'No store yet')}</b></span><span class="muted small">${t.left} to get</span></button>`).join('')}</div>` : '') +
     (h.due.length ? `<div class="card" id="shopLowCard"><h2>Running low?</h2>${h.due.map(x => `
       <div class="shop-low" data-id="${esc(x.id)}"><div><b>${esc(x.name)}</b> <span class="muted small">last bought ${x.days_since} days ago (usually every ~${x.interval_days})</span></div>
         <div class="btn-row" style="margin-top:6px"><button class="btn small primary" data-low="add">Add to list</button><button class="btn small" data-low="snooze">Not now</button><button class="btn small ghost" data-low="stop" aria-label="Stop reminding me about this">Stop</button></div></div>`).join('')}</div>` : '');
 }
 function bindShopHomeCards() {
-  $$('#shopTodayCard [data-go]').forEach(b => b.onclick = () => { state.shopView = 'cart'; location.hash = '#shop'; });
+  $$('#shopTodayCard [data-go]').forEach(b => b.onclick = () => { state.shopView = 'list'; location.hash = '#shop'; });
   $$('#shopLowCard [data-low]').forEach(b => b.onclick = () => {
     const row = b.closest('.shop-low'), id = row.dataset.id, action = b.dataset.low;
     row.querySelectorAll('button').forEach(x => { x.disabled = true; });
@@ -2727,184 +2584,85 @@ const shopAgo = d => d === null || d === undefined ? '' : d === 0 ? 'today' : d 
 
 function paintShop() {
   const g = state.shop; if (!g) return paintNoData();
-  if (!state.shopView) state.shopView = shopTrips(g).some(t => t.date === todayStr() && tripOpen(t)) ? 'cart' : 'list';
-  const v = state.shopView;
-  const active = g.catalog.filter(i => i.active);
-  const trips = shopTrips(g);
-  const left = g.cart.filter(l => !l.done).length;
+  const v = state.shopView === 'catalog' ? 'catalog' : 'list';
+  const left = onList(g).filter(i => !i.got_on).length;
   view.innerHTML = `<div class="seg" id="shopSeg">
-      <button type="button" data-v="list" class="${v === 'list' ? 'on' : ''}">To buy${active.length ? ` <span class="muted">${active.length}</span>` : ''}</button>
-      <button type="button" data-v="cart" class="${v === 'cart' ? 'on' : ''}">Cart${left ? ` <span class="muted">${left}</span>` : ''}</button>
+      <button type="button" data-v="list" class="${v === 'list' ? 'on' : ''}">To buy${left ? ` <span class="muted">${left}</span>` : ''}</button>
       <button type="button" data-v="catalog" class="${v === 'catalog' ? 'on' : ''}">Catalog</button></div>
-    <div id="shopBody">${v === 'cart' ? shopCartHtml(g, trips) : v === 'catalog' ? shopCatalogHtml(g) : shopListHtml(g, active)}</div>
+    <div id="shopBody">${v === 'catalog' ? shopCatalogHtml(g) : shopListHtml(g)}</div>
     <div class="fab-space"></div>`;
   $$('#shopSeg button').forEach(b => b.onclick = () => { state.shopView = b.dataset.v; paintShop(); window.scrollTo(0, 0); });
-  if (v === 'cart') bindShopCart(g); else if (v === 'catalog') bindShopCatalog(g); else bindShopList(g);
-  shopBar();
+  if (v === 'catalog') bindShopCatalog(g); else bindShopList(g);
   addFab(() => openShopItem(null));
 }
 
-// ---- To buy: the active list ----
-function shopListHtml(g, active) {
-  const cats = g.categories.filter(c => active.some(i => i.category === c));
-  const last = lsGet('homebase.shopCat', 'Grocery');
-  return `<form class="groc-add" id="sAddF"><input type="text" id="sAdd" placeholder="Add (e.g. tissues, rain boots)" autocomplete="off" maxlength="60" enterkeyhint="done">
-      <select id="sCat" aria-label="Category">${g.categories.map(c => `<option ${c === last ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+// ---- To buy: one list per store ----
+function shopListHtml(g) {
+  const lists = shopStores(g);
+  const line = i => `<div class="groc-item shop-line${i.got_on ? ' have' : ''}" data-id="${esc(i.id)}">
+      <button type="button" class="shop-pick shop-tick" data-tick="${esc(i.id)}" aria-pressed="${i.got_on ? 'true' : 'false'}" aria-label="${esc(i.name)}"><span class="groc-box" aria-hidden="true">${i.got_on ? '✓' : ''}</span></button>
+      <button type="button" class="shop-main" data-edit="${esc(i.id)}"><span class="groc-name">${esc(i.name)}</span>${i.note ? ` <span class="muted small">${esc(i.note)}</span>` : ''}${i.private ? ' <span class="lock" title="Only you can see this">🔒</span>' : ''}</button></div>`;
+  return `<form class="groc-add shop-addf" id="sAddF"><input type="text" id="sAdd" placeholder="Add (e.g. tissues, milk)" autocomplete="off" maxlength="60" enterkeyhint="done">
+      <input type="text" id="sStore" list="sStores" placeholder="Store" value="${esc(lsGet('homebase.shopStore', ''))}" maxlength="40" autocomplete="off" aria-label="Store">
+      <datalist id="sStores">${g.stores.map(s => `<option value="${esc(s)}">`).join('')}</datalist>
       <button class="btn small primary">Add</button></form>
     ${(g.due || []).length ? `<div class="card" id="shopLowCard"><h2>Running low?</h2>${g.due.map(x => `
       <div class="shop-low" data-id="${esc(x.id)}"><div><b>${esc(x.name)}</b> <span class="muted small">last bought ${esc(shopAgo(x.days_since))}</span></div>
         <div class="btn-row" style="margin-top:6px"><button class="btn small primary" data-low="add">Add to list</button><button class="btn small" data-low="snooze">Not now</button><button class="btn small ghost" data-low="stop" aria-label="Stop reminding me about this">Stop</button></div></div>`).join('')}</div>` : ''}
-    ${active.length ? cats.map(c => `<div class="section-title" style="margin-left:0">${esc(c)}<span>${active.filter(i => i.category === c).length}</span></div>
-      <div class="groc-list">${active.filter(i => i.category === c).map(i => `<div class="groc-item shop-item${shopSel.has(i.id) ? ' sel' : ''}" data-id="${esc(i.id)}">
-        <button type="button" class="shop-pick" data-sel="${esc(i.id)}" aria-pressed="${shopSel.has(i.id)}" aria-label="Select ${esc(i.name)}"><span class="groc-box" aria-hidden="true">${shopSel.has(i.id) ? '✓' : ''}</span></button>
-        <button type="button" class="shop-main" data-edit="${esc(i.id)}"><span class="groc-name">${esc(i.name)}</span>${i.note ? ` <span class="muted small">${esc(i.note)}</span>` : ''}${i.store ? ` <span class="shop-tag">${esc(i.store)}</span>` : ''}${i.private ? ' <span class="lock" title="Only you can see this">🔒</span>' : ''}</button></div>`).join('')}</div>`).join('')
-      : `<div class="empty small" style="margin-top:20px"><div class="big">Nothing on the list</div>Add things you need above, or pick from the Catalog. Tell ${esc(assistantName())}: “add paper towels to necessities”.</div>`}`;
+    ${lists.length ? lists.map(l => {
+      const got = l.items.filter(i => i.got_on).length;
+      return `<div class="shop-store" data-store="${esc(l.store)}">
+        <div class="section-title" style="margin-left:0">${esc(l.store || 'No store yet')}<span>${l.items.length - got}${got ? ` · ${got} got` : ''}</span>${got ? '<button type="button" class="shop-clear" data-clear>Clear checked</button>' : ''}</div>
+        <div class="groc-list">${l.items.map(line).join('')}</div></div>`; }).join('')
+      : `<div class="empty small" style="margin-top:20px"><div class="big">Nothing on the list</div>Add things above (with the store), or pick from the Catalog. Tell ${esc(assistantName())}: “add paper towels to the Target list”.</div>`}`;
 }
 function bindShopList(g) {
   $('#sAddF').onsubmit = e => {
     e.preventDefault();
-    const name = $('#sAdd').value.trim(), category = $('#sCat').value; if (!name) return;
-    lsSet('homebase.shopCat', category);
+    const raw = $('#sAdd').value.trim(), store = $('#sStore').value.trim(); if (!raw) return;
+    lsSet('homebase.shopStore', store);
     $('#sAdd').value = '';
+    const names = raw.split(/\s*,\s*/).filter(Boolean);
     // shows at once; the server's copy replaces it
-    name.split(/\s*,\s*/).filter(Boolean).forEach(n => {
+    names.forEach(n => {
       const same = g.catalog.find(i => i.name.toLowerCase() === n.toLowerCase());
-      if (same) same.active = true; else g.catalog.push({ id: 'tmp' + Math.random().toString(36).slice(2), name: n, category, store: '', note: '', active: true, history: [], bought_count: 0 });
+      if (same) { same.active = true; same.got_on = ''; if (store) same.store = store; }
+      else g.catalog.push({ id: 'tmp' + Math.random().toString(36).slice(2), name: n, category: 'Misc', store, note: '', active: true, got_on: '', history: [], bought_count: 0 });
     });
     paintShop(); $('#sAdd')?.focus();
-    Promise.all(name.split(/\s*,\s*/).filter(Boolean).map(n => shopCall('shop.item', { name: n, category }))).catch(fail);
+    shopCall('shop.add', { items: names, store }).catch(fail);
   };
-  $$('[data-sel]').forEach(b => b.onclick = () => { const id = b.dataset.sel; shopSel.has(id) ? shopSel.delete(id) : shopSel.add(id); paintShop(); });
+  $$('[data-tick]').forEach(b => b.onclick = () => {
+    const it = g.catalog.find(i => i.id === b.dataset.tick); if (!it) return;
+    const done = !it.got_on;
+    it.got_on = done ? todayStr() : '';
+    it.bought_count = Math.max((it.bought_count || 0) + (done ? 1 : -1), 0);
+    paintShop();
+    if (!String(it.id).startsWith('tmp')) shopCall('shop.tick', { id: it.id, done }).catch(fail);
+  });
+  $$('[data-clear]').forEach(b => b.onclick = () => {
+    const store = b.closest('.shop-store').dataset.store;
+    g.catalog.forEach(i => { if (i.active && i.got_on && (i.store || '') === store) { i.active = false; i.got_on = ''; } });
+    paintShop();
+    shopCall('shop.clear', { store }).catch(fail);
+  });
   $$('.shop-main[data-edit]').forEach(b => b.onclick = () => { const it = g.catalog.find(i => i.id === b.dataset.edit); if (it) openShopItem(it); });
   bindShopHomeCards();
-}
-// the bar with "Add to a trip" appears at the bottom left while things are selected (the right side is for the thumb buttons)
-function shopBar() {
-  $('#shopBar')?.remove();
-  if (currentTab() !== 'shop' || state.shopView !== 'list' || !shopSel.size) return;
-  const bar = document.createElement('div');
-  bar.id = 'shopBar'; bar.className = 'shop-bar';
-  bar.innerHTML = `<span class="grow"><b>${shopSel.size}</b> selected</span><button type="button" class="btn small ghost" id="sbClear">Clear</button><button type="button" class="btn small primary" id="sbTrip">Add to a trip</button>`;
-  document.body.appendChild(bar);
-  $('#sbClear').onclick = () => { shopSel.clear(); paintShop(); };
-  $('#sbTrip').onclick = () => openTripBuilder([...shopSel]);
-}
-
-// ---- Cart: trips ----
-function shopCartHtml(g, trips) {
-  const today = todayStr();
-  const open = trips.filter(t => !(t.date < today && !tripOpen(t)));
-  const past = trips.filter(t => t.date < today && !tripOpen(t)).reverse();
-  const line = l => `<div class="groc-item shop-line${l.done ? ' have' : ''}" data-line="${esc(l.id)}">
-      <button type="button" class="shop-pick shop-tick" data-tick="${esc(l.id)}" aria-pressed="${l.done ? 'true' : 'false'}" aria-label="${esc(l.name)}"><span class="groc-box" aria-hidden="true">${l.done ? '✓' : ''}</span></button>
-      <span class="grow shop-main"><span class="groc-name">${esc(l.name)}</span>${l.qty ? ` <span class="muted small">${esc(l.qty)}</span>` : ''}${l.private ? ' <span class="lock">🔒</span>' : ''}</span>
-      ${l.done ? '' : `<button type="button" class="shop-x" data-rm="${esc(l.id)}" aria-label="Remove ${esc(l.name)} from this trip">✕</button>`}</div>`;
-  return `<div class="btn-row" style="margin-bottom:10px"><button type="button" class="btn small primary" id="newTrip">＋ New trip</button></div>
-    ${open.length ? open.map(t => {
-      const n = t.lines.filter(l => l.done).length;
-      const late = t.date < today;
-      return `<div class="card shop-trip" data-trip="${esc(t.date)}|${esc(t.store)}">
-        <div class="shop-trip-h"><span class="grow"><b>${esc(tripWhen(t.date))}</b> · ${esc(tripName(t))}${late ? ' <span class="shop-tag warn">not finished</span>' : ''}</span><span class="muted small">${n}/${t.lines.length}</span></div>
-        <div class="groc-list">${t.lines.slice().sort((a, b) => (!!a.done - !!b.done)).map(line).join('')}</div>
-        <form class="groc-add shop-tripadd" data-add><input type="text" placeholder="Add to this trip" autocomplete="off" maxlength="60" enterkeyhint="done"><button class="btn small">Add</button></form>
-        <div class="btn-row">${t.lines.some(l => !l.done) ? '<button type="button" class="btn small" data-done>Done shopping</button>' : ''}<button type="button" class="btn small ghost" data-move>Change day/store</button></div>
-      </div>`; }).join('')
-      : `<div class="empty small" style="margin-top:14px"><div class="big">No trips yet</div>Tap “New trip”, pick a day and a store, then add what you need. Or select things on the To buy list.</div>`}
-    ${past.length ? `<details class="later" data-fold="trips" ${state.taskFolds?.trips ? 'open' : ''}><summary><span>Earlier trips</span><span class="muted small">${past.length}</span></summary>
-      ${past.slice(0, 12).map(t => `<div class="card"><div class="shop-trip-h"><span class="grow"><b>${esc(tripWhen(t.date))}</b> · ${esc(tripName(t))}</span></div>
-        <div class="muted small">${t.lines.map(l => esc(l.name)).join(', ')}</div></div>`).join('')}</details>` : ''}`;
-}
-function bindShopCart(g) {
-  $('#newTrip').onclick = () => openTripBuilder([]);
-  const tripOf = el => { const [date, store] = el.closest('.shop-trip').dataset.trip.split('|'); return { date, store: store || '' }; };
-  $$('[data-tick]').forEach(b => b.onclick = () => {
-    const l = g.cart.find(x => x.id === b.dataset.tick); if (!l) return;
-    l.done = !l.done;
-    const it = g.catalog.find(i => i.id === l.catalog_id);
-    if (it) { it.bought_count = Math.max((it.bought_count || 0) + (l.done ? 1 : -1), 0); if (l.done) it.last_bought = todayStr(); }
-    paintShop();
-    shopCall('shop.cart.set', { id: l.id, done: l.done }).catch(fail);
-  });
-  $$('[data-rm]').forEach(b => b.onclick = () => {
-    const l = g.cart.find(x => x.id === b.dataset.rm); if (!l) return;
-    g.cart = g.cart.filter(x => x.id !== l.id);
-    const it = g.catalog.find(i => i.id === l.catalog_id); if (it) it.active = true;
-    paintShop();
-    shopCall('shop.cart.set', { id: l.id, remove: true }).catch(fail);
-  });
-  $$('[data-add]').forEach(f => f.onsubmit = e => {
-    e.preventDefault();
-    const inp = f.querySelector('input'), v = inp.value.trim(); if (!v) return;
-    const t = tripOf(f); inp.value = '';
-    busy(f.querySelector('button'), () => shopCall('shop.cart.add', { ...t, names: v })).then(() => { if (currentTab() === 'shop') { paintShop(); } }).catch(fail);
-  });
-  $$('[data-done]').forEach(b => b.onclick = () => {
-    const t = tripOf(b);
-    if (!confirm('Finish this trip? Anything not ticked goes back on your To buy list.')) return;
-    const lines = g.cart.filter(l => l.date === t.date && l.store === t.store && !l.done);
-    lines.forEach(l => { const it = g.catalog.find(i => i.id === l.catalog_id); if (it) it.active = true; });
-    g.cart = g.cart.filter(l => !lines.includes(l));
-    paintShop();
-    shopCall('shop.trip.done', t).then(() => toast(lines.length ? `${lines.length} item${lines.length > 1 ? 's' : ''} back on your list.` : 'All done. 🎉')).catch(fail);
-  });
-  $$('[data-move]').forEach(b => b.onclick = () => openTripMove(tripOf(b)));
-  $$('details[data-fold]').forEach(d => d.addEventListener('toggle', () => { (state.taskFolds = state.taskFolds || {})[d.dataset.fold] = d.open; }));
-}
-
-// Make a trip: day, store, and what to get (picked from the list, or typed).
-function openTripBuilder(preIds) {
-  const g = state.shop; if (!g) return;
-  const active = g.catalog.filter(i => i.active);
-  const picked = new Set(preIds);
-  const lastStore = lsGet('homebase.shopStore', '');
-  openModal(`<h3>New shopping trip</h3>
-    <label class="field"><span>Day</span><input type="date" id="tbDate" value="${esc(todayStr())}"></label>
-    <label class="field"><span>Store</span><input type="text" id="tbStore" list="storeList" value="${esc(preIds.length ? '' : lastStore)}" placeholder="Target, Costco…" maxlength="40" autocomplete="off">
-      <datalist id="storeList">${g.stores.map(s => `<option value="${esc(s)}">`).join('')}</datalist></label>
-    ${g.stores.length ? `<div class="fchips" id="tbStores">${g.stores.slice(0, 6).map(s => `<button type="button" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
-    ${active.length ? `<div class="field"><span>From your list</span><div class="fchips wrap" id="tbItems">${active.map(i => `<button type="button" data-i="${esc(i.id)}" class="${picked.has(i.id) ? 'on' : ''}">${esc(i.name)}</button>`).join('')}</div></div>` : ''}
-    <label class="field"><span>Something else? <span class="muted">(separate with commas)</span></span><input type="text" id="tbNames" placeholder="e.g. birthday candles, batteries" maxlength="200" autocomplete="off"></label>
-    <button class="btn primary block" id="tbGo">Create trip</button>`);
-  const alive = dialogAlive();
-  $$('#tbStores [data-s]').forEach(b => b.onclick = () => { $('#tbStore').value = b.dataset.s; });
-  $$('#tbItems [data-i]').forEach(b => b.onclick = () => { b.classList.toggle('on'); picked.has(b.dataset.i) ? picked.delete(b.dataset.i) : picked.add(b.dataset.i); });
-  $('#tbGo').onclick = e => {
-    const date = $('#tbDate').value || todayStr(), store = $('#tbStore').value.trim(), names = $('#tbNames').value.trim();
-    if (!picked.size && !names) { toast('Pick something or type what to get.', true); return; }
-    lsSet('homebase.shopStore', store);
-    busy(e.currentTarget, () => shopCall('shop.cart.add', { date, store, ids: [...picked], names })).then(() => {
-      shopSel.clear(); state.shopView = 'cart';
-      if (alive()) closeModal();
-      if (currentTab() === 'shop') paintShop(); else location.hash = '#shop';
-      toast('Trip ready. Tick things off as you shop.');
-    }).catch(fail);
-  };
-}
-function openTripMove(t) {
-  const g = state.shop;
-  openModal(`<h3>Change this trip</h3>
-    <label class="field"><span>Day</span><input type="date" id="tmDate" value="${esc(t.date)}"></label>
-    <label class="field"><span>Store</span><input type="text" id="tmStore" list="storeList2" value="${esc(t.store)}" maxlength="40" autocomplete="off"><datalist id="storeList2">${(g?.stores || []).map(s => `<option value="${esc(s)}">`).join('')}</datalist></label>
-    <button class="btn primary block" id="tmGo">Save</button>`);
-  const alive = dialogAlive();
-  $('#tmGo').onclick = e => busy(e.currentTarget, () => shopCall('shop.trip.move', { date: t.date, store: t.store, to_date: $('#tmDate').value || t.date, to_store: $('#tmStore').value.trim() }))
-    .then(() => { if (alive()) closeModal(); if (currentTab() === 'shop') paintShop(); }).catch(fail);
 }
 
 // ---- Catalog ----
 function shopCatalogHtml(g) {
   const q = (state.shopQ || '').toLowerCase();
-  const inTrip = new Set(g.cart.filter(l => !l.done).map(l => l.catalog_id));
-  const items = g.catalog.filter(i => !q || i.name.toLowerCase().includes(q) || String(i.category).toLowerCase().includes(q));
+  const items = g.catalog.filter(i => !q || i.name.toLowerCase().includes(q) || String(i.category).toLowerCase().includes(q) || String(i.store || '').toLowerCase().includes(q));
   const cats = g.categories.filter(c => items.some(i => i.category === c));
-  const info = i => [i.bought_count ? `bought ${i.bought_count}×` : '', i.last_bought ? `last ${shopAgo(i.days_since ?? dayDiff(i.last_bought, todayStr()))}` : '',
+  const info = i => [i.store, i.bought_count ? `bought ${i.bought_count}×` : '', i.last_bought ? `last ${shopAgo(i.days_since ?? dayDiff(i.last_bought, todayStr()))}` : '',
     i.interval_days && !i.stop_remind ? `reminds every ~${i.interval_days} days` : ''].filter(Boolean).join(' · ');
   return `<input type="text" id="catQ" class="log-search" placeholder="Search the catalog" enterkeyhint="search" value="${esc(state.shopQ || '')}" autocomplete="off">
     ${cats.length ? cats.map(c => `<div class="section-title" style="margin-left:0">${esc(c)}<span>${items.filter(i => i.category === c).length}</span></div>
       <div class="groc-list">${items.filter(i => i.category === c).map(i => `<div class="groc-item shop-item" data-id="${esc(i.id)}">
         <button type="button" class="shop-main" data-edit="${esc(i.id)}"><span class="groc-name">${esc(i.name)}</span>${i.private ? ' <span class="lock">🔒</span>' : ''}
           ${info(i) ? `<span class="muted small shop-info">${esc(info(i))}</span>` : ''}</button>
-        ${i.active ? '<span class="shop-state">On list ✓</span>' : inTrip.has(i.id) ? '<span class="shop-state">In a trip</span>' : `<button type="button" class="btn small" data-addlist="${esc(i.id)}">＋ List</button>`}</div>`).join('')}</div>`).join('')
+        ${i.active ? '<span class="shop-state">On list ✓</span>' : `<button type="button" class="btn small" data-addlist="${esc(i.id)}">＋ List</button>`}</div>`).join('')}</div>`).join('')
       : '<div class="empty small" style="margin-top:20px">Nothing found.</div>'}`;
 }
 function bindShopCatalog(g) {
@@ -2915,8 +2673,8 @@ function bindShopCatalog(g) {
   });
   $$('[data-addlist]').forEach(b => b.onclick = () => {
     const it = g.catalog.find(i => i.id === b.dataset.addlist); if (!it) return;
-    it.active = true; paintShop();
-    shopCall('shop.item', { id: it.id, active: true }).then(() => toast(`${it.name}: on your list.`)).catch(fail);
+    it.active = true; it.got_on = ''; paintShop();
+    shopCall('shop.item', { id: it.id, active: true }).then(() => toast(`${it.name}: on your list${it.store ? ' (' + it.store + ')' : ''}.`)).catch(fail);
   });
   $$('.shop-main[data-edit]').forEach(b => b.onclick = () => { const it = g.catalog.find(i => i.id === b.dataset.edit); if (it) openShopItem(it); });
 }
@@ -2931,13 +2689,13 @@ function openShopItem(it) {
     <label class="field"><span>Name</span><input type="text" id="siName" value="${esc(it?.name || '')}" maxlength="60" autocomplete="off"></label>
     <label class="field"><span>Category</span><input type="text" id="siCat" list="siCats" value="${esc(it?.category || lsGet('homebase.shopCat', 'Grocery'))}" maxlength="30" autocomplete="off">
       <datalist id="siCats">${g.categories.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
-    <label class="field"><span>Usual store <span class="muted">(optional)</span></span><input type="text" id="siStore" list="siStores" value="${esc(it?.store || '')}" maxlength="40" autocomplete="off">
+    <label class="field"><span>Store <span class="muted">(where you usually buy it)</span></span><input type="text" id="siStore" list="siStores" value="${esc(it?.store || '')}" maxlength="40" autocomplete="off">
       <datalist id="siStores">${g.stores.map(s => `<option value="${esc(s)}">`).join('')}</datalist></label>
     <label class="field"><span>Note <span class="muted">(size, brand…)</span></span><input type="text" id="siNote" value="${esc(it?.note || '')}" maxlength="120" autocomplete="off"></label>
     <label class="field"><span>Remind me to buy again every… <span class="muted">(days)</span></span><input type="number" min="1" max="730" id="siEvery" value="${it?.interval_days || ''}" placeholder="e.g. 30">
       ${learned ? `<span class="muted small" style="display:block;margin-top:4px">Learned from your purchases. Change it if it's not right.</span>` : ''}</label>
     ${!isNew && it.interval_days ? `<label class="field check-field row-field"><input type="checkbox" id="siStop" ${it.stop_remind ? 'checked' : ''}><span>Don't remind me about this</span></label>` : ''}
-    <label class="field check-field row-field"><input type="checkbox" id="siActive" ${isNew || it.active ? 'checked' : ''}><span>On my To buy list</span></label>
+    <label class="field check-field row-field"><input type="checkbox" id="siActive" ${isNew || it.active ? 'checked' : ''}><span>On my shopping list</span></label>
     ${mine ? `<label class="field check-field row-field"><input type="checkbox" id="siPrivate" ${it?.private ? 'checked' : ''}><span>Only me <span class="muted small">(hidden from the rest of the family)</span></span></label>` : ''}
     <div class="btn-row"><button class="btn primary" id="siSave">Save</button>${isNew ? '' : '<button class="btn danger" id="siDel">Remove</button>'}</div>`);
   const alive = dialogAlive();
@@ -2954,7 +2712,7 @@ function openShopItem(it) {
   };
   $('#siDel')?.addEventListener('click', e => {
     if (!confirm(`Remove “${it.name}” from the catalog?`)) return;
-    busy(e.currentTarget, () => shopCall('shop.item.delete', { id: it.id })).then(() => { shopSel.delete(it.id); if (alive()) closeModal(); if (currentTab() === 'shop') paintShop(); }).catch(fail);
+    busy(e.currentTarget, () => shopCall('shop.item.delete', { id: it.id })).then(() => { if (alive()) closeModal(); if (currentTab() === 'shop') paintShop(); }).catch(fail);
   });
 }
 
@@ -3175,8 +2933,8 @@ function localTurn(text, { canWrite = true } = {}) {
     if (m) {
       const items = m[1].split(/\s*(?:,|\band\b|、|和|跟)\s*/).map(x => x.replace(/^(?:some|a|an|the)\s+/, '').trim()).filter(Boolean).slice(0, 12);
       if (items.length) {
-        return { reply: `Added ${listText(items)} to the grocery list.`, label: '🛒 Added to the list: ' + items.join(', '),
-          run: () => api('grocery.set', { add: items }).then(g => { if (g && Array.isArray(g.items)) setGrocery(g); }) };
+        return { reply: `Added ${listText(items)} to the shopping list.`, label: '🛒 Added to the list: ' + items.join(', '),
+          run: () => shopCall('shop.add', { items }) };
       }
     }
     m = !LOCAL_TIME_WORDS.test(n) && (/^(?:i |we )?(?:just )?(?:finished|did|completed|have done|done with|took care of) (?:the |my )?(.+?)(?: today)?$/.exec(n) ||
@@ -3201,9 +2959,9 @@ function localTurn(text, { canWrite = true } = {}) {
     const a = localWeather(tmr); return a ? { reply: a } : null;
   }
   if (localFits(ws, ['grocery', 'groceries', 'shopping', 'list', 'buy', 'need', 'to', 'store', 'still'], ['grocery', 'groceries', 'shopping']) || /^(?:购物|买菜)清单(?:上)?(?:有什么|有啥)?$/.test(n)) {
-    return { reply: '', fetch: () => api('grocery.get').then(g => {
-      const left = (g.items || []).filter(i => !i.status).map(i => i.name);
-      return left.length ? `On the list (${left.length}): ${listText(left.slice(0, 25))}${left.length > 25 ? ', and more' : ''}.` : 'The grocery list is empty.';
+    return { reply: '', fetch: () => api('shop.get').then(g => {
+      const left = (g.catalog || []).filter(i => i.active && !i.got_on).map(i => i.name);
+      return left.length ? `On the list (${left.length}): ${listText(left.slice(0, 25))}${left.length > 25 ? ', and more' : ''}.` : 'The shopping list is empty.';
     }) };
   }
   if (localFits(ws, ['due', 'todo', 'to', 'tasks', 'task', 'chores', 'chore', 'overdue', 'still', 'left', 'need', 'today', 'this', 'week', 'list'], ['due', 'todo', 'tasks', 'task', 'chores', 'chore', 'overdue'])) {

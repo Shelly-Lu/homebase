@@ -629,3 +629,11 @@ span.shop-main { cursor: default; }
 .shop-item, .shop-line { gap: 0; }
 .shop-pick { width: 46px; }
 .shop-item > .shop-main:first-child { padding-left: 14px; }
+
+/* Shop: one list per store */
+.shop-addf { flex-wrap: wrap; }
+.shop-addf #sAdd { flex: 1 1 100%; }
+.shop-addf #sStore { flex: 1 1 0; min-width: 0; }
+.shop-clear { margin-left: auto; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; font-weight: 650; padding: 4px 0 4px 10px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.shop-store .section-title { display: flex; align-items: center; gap: 8px; }
+.food-find .groc-add { margin-top: 10px; }
